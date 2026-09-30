@@ -1,0 +1,23 @@
+[package]
+name = "driftfs-sync"
+description = "Incremental change synchronization engine for DriftFS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+driftfs-core = { workspace = true }
+driftfs-provider = { workspace = true }
+driftfs-metadata = { workspace = true }
+driftfs-cache = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+driftfs-testkit = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

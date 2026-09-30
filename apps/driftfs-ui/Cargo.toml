@@ -1,0 +1,35 @@
+[package]
+name = "driftfs-ui"
+description = "Desktop application and system tray management surface for DriftFS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+driftfs-core = { workspace = true }
+driftfs-config = { workspace = true }
+driftfs-logging = { workspace = true }
+driftfs-auth = { workspace = true }
+driftfs-provider = { workspace = true }
+driftfs-google-drive = { workspace = true }
+driftfs-metadata = { workspace = true }
+driftfs-filesystem = { workspace = true }
+driftfs-platform-windows = { workspace = true }
+driftfs-sync = { workspace = true }
+driftfs-cache = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+slint = { workspace = true }
+tray-icon = { workspace = true }
+open = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }
+
+[lints]
+workspace = true

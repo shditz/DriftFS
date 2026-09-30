@@ -1,0 +1,13 @@
+[package]
+name = "driftfs-provider"
+description = "Cloud storage provider abstraction trait and shared metadata types for DriftFS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+driftfs-core = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

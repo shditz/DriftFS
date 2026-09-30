@@ -1,0 +1,18 @@
+[package]
+name = "driftfs-cache"
+description = "Bounded local cache manager with LRU eviction for DriftFS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+driftfs-core = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

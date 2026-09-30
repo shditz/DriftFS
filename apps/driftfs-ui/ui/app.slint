@@ -1,0 +1,567 @@
+import { Theme } from "theme.slint";
+import { Card, StatusBadge, PrimaryButton, SecondaryButton, DangerButton, ProgressBar, SidebarItem } from "components.slint";
+
+export component AppWindow inherits Window {
+    title: "DriftFS - Google Drive Virtual Filesystem";
+    preferred-width: 920px;
+    preferred-height: 640px;
+    min-width: 800px;
+    min-height: 560px;
+    background: Theme.background;
+    default-font-family: "Segoe UI, -apple-system, BlinkMacSystemFont, sans-serif";
+
+    in-out property <int> selected-tab: 0;
+
+    in-out property <bool> is-authenticated: false;
+    in-out property <string> account-email: "Not Connected";
+    in-out property <string> quota-used-str: "0 B";
+    in-out property <string> quota-total-str: "0 B";
+    in-out property <float> quota-percentage: 0.0;
+
+    in-out property <bool> is-mounted: false;
+    in-out property <string> mount-status-text: "Unmounted";
+    in-out property <string> drive-letter: "G:";
+
+    in-out property <string> sync-status-text: "Idle";
+    in-out property <string> last-sync-time: "Not yet synced";
+    in-out property <int> dirty-files-count: 0;
+
+    in-out property <string> cache-used-str: "0 MB";
+    in-out property <string> cache-max-str: "1024 MB";
+    in-out property <float> cache-percentage: 0.0;
+    in-out property <string> cache-dir-path: "C:\\Users\\...\\cache";
+
+    in-out property <bool> auto-start: false;
+    in-out property <bool> start-minimized: true;
+    in-out property <bool> prefetch-enabled: true;
+    in-out property <int> sync-interval-secs: 30;
+
+    in-out property <[string]> activity-entries: [
+        "DriftFS initialized",
+        "Ready to mount Google Drive",
+    ];
+
+    callback login-clicked();
+    callback logout-clicked();
+    callback mount-toggle-clicked();
+    callback open-explorer-clicked();
+    callback purge-cache-clicked();
+    callback toggle-autostart();
+    callback toggle-start-minimized();
+    callback toggle-prefetch();
+    callback change-drive-letter(string);
+
+    HorizontalLayout {
+        Rectangle {
+            width: 220px;
+            background: Theme.sidebar;
+            border-color: Theme.border-subtle;
+            border-width: 1px;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    padding-bottom: 12px;
+
+                    Image {
+                        source: @image-url("../../../assets/icons/driftfs.png");
+                        width: 32px;
+                        height: 32px;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: "DriftFS";
+                            color: Theme.text-primary;
+                            font-size: 15px;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: "v0.1.0 (Windows)";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                        }
+                    }
+                }
+
+                SidebarItem {
+                    text: "Overview";
+                    icon-text: "[~]";
+                    active: root.selected-tab == 0;
+                    clicked => { root.selected-tab = 0; }
+                }
+
+                SidebarItem {
+                    text: "Local Cache";
+                    icon-text: "[$]";
+                    active: root.selected-tab == 1;
+                    clicked => { root.selected-tab = 1; }
+                }
+
+                SidebarItem {
+                    text: "Activity Log";
+                    icon-text: "[*]";
+                    active: root.selected-tab == 2;
+                    clicked => { root.selected-tab = 2; }
+                }
+
+                SidebarItem {
+                    text: "Settings";
+                    icon-text: "[#]";
+                    active: root.selected-tab == 3;
+                    clicked => { root.selected-tab = 3; }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                Rectangle {
+                    height: 52px;
+                    background: Theme.surface-card;
+                    border-color: Theme.border;
+                    border-width: 1px;
+                    border-radius: Theme.radius-md;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: root.is-authenticated ? Theme.success : Theme.warning;
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.is-authenticated ? "Google Account" : "Disconnected";
+                                color: Theme.text-primary;
+                                font-size: 11px;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.account-email;
+                                color: Theme.text-muted;
+                                font-size: 10px;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            background: Theme.background;
+            horizontal-stretch: 1;
+
+            VerticalLayout {
+                padding: 24px;
+                spacing: 20px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    VerticalLayout {
+                        Text {
+                            text: root.selected-tab == 0 ? "Drive Overview" :
+                                  root.selected-tab == 1 ? "Local Cache Storage" :
+                                  root.selected-tab == 2 ? "Sync Activity" : "Application Settings";
+                            color: Theme.text-primary;
+                            font-size: 20px;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: root.selected-tab == 0 ? "Manage virtual mount and Google Drive connection" :
+                                  root.selected-tab == 1 ? "Manage local storage and temporary offline files" :
+                                  root.selected-tab == 2 ? "Recent synchronization events and connection status" : "Startup and performance configuration";
+                            color: Theme.text-muted;
+                            font-size: 12px;
+                        }
+                    }
+
+                    StatusBadge {
+                        text: root.is-mounted ? "Mounted (" + root.drive-letter + ")" : root.mount-status-text;
+                        badge-color: root.is-mounted ? Theme.success : (root.is-authenticated ? Theme.primary : Theme.warning);
+                        badge-bg: root.is-mounted ? Theme.success-bg : Theme.surface;
+                    }
+                }
+
+                if root.selected-tab == 0: VerticalLayout {
+                    spacing: 16px;
+
+                    Card {
+                        HorizontalLayout {
+                            spacing: 24px;
+                            alignment: space-between;
+
+                            VerticalLayout {
+                                spacing: 8px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: "Virtual Drive";
+                                    color: Theme.text-muted;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    letter-spacing: 0.5px;
+                                }
+
+                                Text {
+                                    text: root.is-mounted ? "Drive " + root.drive-letter + " is Active" : "Virtual Drive Unmounted";
+                                    color: Theme.text-primary;
+                                    font-size: 22px;
+                                    font-weight: 700;
+                                }
+
+                                Text {
+                                    text: root.is-mounted ?
+                                        "Files stream on demand into Windows Explorer without mirroring your entire drive locally." :
+                                        "Mount Google Drive to access your cloud files as a native local drive letter.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 10px;
+                                width: 200px;
+
+                                PrimaryButton {
+                                    text: root.is-mounted ? "Unmount Drive" : "Mount Drive (" + root.drive-letter + ")";
+                                    enabled: root.is-authenticated;
+                                    clicked => { root.mount-toggle-clicked(); }
+                                }
+
+                                if root.is-mounted: SecondaryButton {
+                                    text: "Open in Explorer";
+                                    clicked => { root.open-explorer-clicked(); }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Card {
+                            horizontal-stretch: 1;
+                            spacing: 12px;
+
+                            Text {
+                                text: "Google Account";
+                                color: Theme.text-muted;
+                                font-size: 11px;
+                                font-weight: 700;
+                                letter-spacing: 0.5px;
+                            }
+
+                            Text {
+                                text: root.account-email;
+                                color: Theme.text-primary;
+                                font-size: 16px;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+
+                            if !root.is-authenticated: PrimaryButton {
+                                text: "Connect Google Account";
+                                clicked => { root.login-clicked(); }
+                            }
+
+                            if root.is-authenticated: SecondaryButton {
+                                text: "Disconnect Google Account";
+                                clicked => { root.logout-clicked(); }
+                            }
+                        }
+
+                        Card {
+                            horizontal-stretch: 1;
+                            spacing: 10px;
+
+                            Text {
+                                text: "Cloud Storage Quota";
+                                color: Theme.text-muted;
+                                font-size: 11px;
+                                font-weight: 700;
+                                letter-spacing: 0.5px;
+                            }
+
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text {
+                                    text: root.quota-used-str + " used";
+                                    color: Theme.text-primary;
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "of " + root.quota-total-str;
+                                    color: Theme.text-muted;
+                                    font-size: 13px;
+                                }
+                            }
+
+                            ProgressBar {
+                                progress: root.quota-percentage;
+                                fill-color: Theme.primary;
+                            }
+                        }
+                    }
+
+                    Card {
+                        HorizontalLayout {
+                            alignment: space-between;
+                            
+                            HorizontalLayout {
+                                spacing: 20px;
+
+                                VerticalLayout {
+                                    Text {
+                                        text: "Sync Status";
+                                        color: Theme.text-muted;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                    }
+                                    Text {
+                                        text: root.sync-status-text;
+                                        color: Theme.text-primary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    Text {
+                                        text: "Last Synced";
+                                        color: Theme.text-muted;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                    }
+                                    Text {
+                                        text: root.last-sync-time;
+                                        color: Theme.text-secondary;
+                                        font-size: 13px;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    Text {
+                                        text: "Pending Uploads";
+                                        color: Theme.text-muted;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                    }
+                                    Text {
+                                        text: root.dirty-files-count == 0 ? "All changes saved" : (root.dirty-files-count == 1 ? "1 file pending upload" : (root.dirty-files-count + " files pending upload"));
+                                        color: root.dirty-files-count == 0 ? Theme.success : Theme.warning;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.selected-tab == 1: VerticalLayout {
+                    spacing: 16px;
+
+                    Card {
+                        spacing: 16px;
+
+                        Text {
+                            text: "Local Cache Usage";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 0.5px;
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: root.cache-used-str + " cached";
+                                color: Theme.text-primary;
+                                font-size: 18px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: "Limit: " + root.cache-max-str + " (Evicts at 85% capacity)";
+                                color: Theme.text-secondary;
+                                font-size: 13px;
+                            }
+                        }
+
+                        ProgressBar {
+                            progress: root.cache-percentage;
+                            fill-color: root.cache-percentage > 0.85 ? Theme.warning : Theme.primary;
+                        }
+
+                        Text {
+                            text: "Active file chunks are cached locally for fast access and automatically evicted when cache limits are reached.";
+                            color: Theme.text-muted;
+                            font-size: 12px;
+                        }
+                    }
+
+                    Card {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Storage Location";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: root.cache-dir-path;
+                            color: Theme.text-secondary;
+                            font-size: 12px;
+                        }
+
+                        HorizontalLayout {
+                            padding-top: 8px;
+                            DangerButton {
+                                text: "Clear Local Cache";
+                                width: 200px;
+                                clicked => { root.purge-cache-clicked(); }
+                            }
+                        }
+                    }
+                }
+
+                if root.selected-tab == 2: VerticalLayout {
+                    spacing: 12px;
+
+                    Card {
+                        vertical-stretch: 1;
+                        spacing: 10px;
+
+                        Text {
+                            text: "Recent Activity";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 0.5px;
+                        }
+
+                        for entry in root.activity-entries: Rectangle {
+                            height: 28px;
+                            background: Theme.surface-subtle;
+                            border-radius: Theme.radius-sm;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                alignment: start;
+                                Text {
+                                    text: entry;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.selected-tab == 3: VerticalLayout {
+                    spacing: 16px;
+
+                    Card {
+                        spacing: 16px;
+
+                        Text {
+                            text: "System Preferences";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 0.5px;
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            VerticalLayout {
+                                Text {
+                                    text: "Start Minimized to System Tray";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "Close and minimize buttons send DriftFS to the Windows notification tray.";
+                                    color: Theme.text-muted;
+                                    font-size: 12px;
+                                }
+                            }
+                            SecondaryButton {
+                                text: root.start-minimized ? "Enabled" : "Disabled";
+                                width: 100px;
+                                clicked => { root.toggle-start-minimized(); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            VerticalLayout {
+                                Text {
+                                    text: "Sequential File Pre-fetching";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "Downloads the next file chunk in the background during sequential read operations.";
+                                    color: Theme.text-muted;
+                                    font-size: 12px;
+                                }
+                            }
+                            SecondaryButton {
+                                text: root.prefetch-enabled ? "Enabled" : "Disabled";
+                                width: 100px;
+                                clicked => { root.toggle-prefetch(); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            VerticalLayout {
+                                Text {
+                                    text: "Launch DriftFS on Windows Startup";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "Automatically start DriftFS in the background when logging into Windows.";
+                                    color: Theme.text-muted;
+                                    font-size: 12px;
+                                }
+                            }
+                            SecondaryButton {
+                                text: root.auto-start ? "Enabled" : "Disabled";
+                                width: 100px;
+                                clicked => { root.toggle-autostart(); }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+}

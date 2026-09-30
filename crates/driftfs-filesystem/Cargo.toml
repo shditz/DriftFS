@@ -1,0 +1,23 @@
+[package]
+name = "driftfs-filesystem"
+description = "Platform-agnostic virtual filesystem contract for DriftFS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+driftfs-core = { workspace = true }
+driftfs-provider = { workspace = true }
+driftfs-metadata = { workspace = true }
+driftfs-cache = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+driftfs-testkit = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

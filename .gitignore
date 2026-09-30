@@ -1,0 +1,38 @@
+# Rust / Cargo
+/target/
+/dist/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment / Secrets
+.env
+.env.*
+*.pem
+*.key
+oauth_credentials.json
+client_secret*.json
+
+# Logs
+*.log
+logs/
+
+# Database (local dev)
+*.db
+*.db-shm
+*.db-wal
+
+# AI & Internal Guidelines
+.agents/
+AGENTS.md
+PROJECT.md

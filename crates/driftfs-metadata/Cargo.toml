@@ -1,0 +1,18 @@
+[package]
+name = "driftfs-metadata"
+description = "SQLite-backed metadata index and local state persistence for DriftFS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+driftfs-core = { workspace = true }
+driftfs-provider = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

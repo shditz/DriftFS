@@ -1,0 +1,29 @@
+# DriftFS Configuration Template
+version = 1
+
+[mount]
+# Drive letter on Windows (e.g. "G:") or directory path on Linux/macOS
+mount_point = "G:"
+# Automatically mount the filesystem on application launch
+auto_mount = false
+
+[cache]
+# Local cache storage path for chunk blocks and metadata staging
+# Defaults to %LOCALAPPDATA%\driftfs\cache on Windows or ~/.cache/driftfs/cache on Unix
+directory = ""
+# Maximum disk footprint for cached chunks in bytes (default: 512 MB)
+max_size_bytes = 536870912
+
+[network]
+# Concurrency limit for parallel chunk fetch requests
+max_concurrent_requests = 4
+# Enable predictive chunk pre-fetching during sequential file read streams
+prefetch_enabled = true
+
+[sync]
+# Polling interval in seconds for remote Google Drive change checkpoints
+poll_interval_secs = 60
+
+[logging]
+# Log verbosity filter: "trace", "debug", "info", "warn", "error"
+level = "info"

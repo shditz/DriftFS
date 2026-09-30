@@ -1,0 +1,27 @@
+[package]
+name = "driftfs-platform-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Windows WinFsp filesystem adapter for DriftFS."
+
+[dependencies]
+driftfs-core = { workspace = true }
+driftfs-filesystem = { workspace = true }
+driftfs-provider = { workspace = true }
+driftfs-metadata = { workspace = true }
+driftfs-logging = { workspace = true }
+winfsp_wrs = "0.4"
+widestring = "1.1"
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+windows-sys = { version = "0.52.0", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
+[dev-dependencies]
+driftfs-testkit = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

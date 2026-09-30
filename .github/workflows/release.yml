@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress
+
+      - name: Build Release Binary
+        run: cargo build --release -p driftfs-ui
+
+      - name: Package Windows Artifacts
+        id: package
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "${{ inputs.tag }}" }
+          $version = $tag.TrimStart('v')
+          .\scripts\package.ps1 -Version $version
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-assets
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/SHA256SUMS.txt
+
+  build-unix:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: driftfs-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: driftfs-macos-aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse3-dev libxkbcommon-dev libfontconfig1-dev
+
+      - name: Build Workspace
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package Unix Archive
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [ "${{ github.ref_type }}" != "tag" ]; then
+            TAG="${{ inputs.tag }}"
+          fi
+          VERSION="${TAG#v}"
+          PKG_NAME="driftfs-v${VERSION}-${{ matrix.artifact_name }}"
+          mkdir -p "dist/${PKG_NAME}"
+          cp config.example.toml LICENSE-MIT LICENSE-APACHE README.md "dist/${PKG_NAME}/"
+          tar -czf "dist/${PKG_NAME}.tar.gz" -C dist "${PKG_NAME}"
+          cd dist
+          sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.sha256"
+
+      - name: Upload Unix Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  publish-release:
+    name: Publish GitHub Draft Release
+    needs: [build-windows, build-unix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Consolidate Checksums
+        shell: bash
+        run: |
+          mkdir -p dist
+          find release-artifacts -type f \( -name "*.zip" -o -name "*.exe" -o -name "*.tar.gz" \) -exec cp {} dist/ \;
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: false
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

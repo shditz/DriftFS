@@ -1,0 +1,16 @@
+[package]
+name = "driftfs-config"
+description = "Versioned configuration schema, persistence, and OS-appropriate default paths for DriftFS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+driftfs-core = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

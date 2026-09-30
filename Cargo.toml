@@ -1,0 +1,91 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/driftfs-core",
+    "crates/driftfs-config",
+    "crates/driftfs-logging",
+    "crates/driftfs-provider",
+    "crates/driftfs-auth",
+    "crates/driftfs-metadata",
+    "crates/driftfs-sync",
+    "crates/driftfs-cache",
+    "crates/driftfs-filesystem",
+    "crates/driftfs-google-drive",
+    "crates/driftfs-testkit",
+    "platforms/windows",
+    "platforms/linux",
+    "platforms/macos",
+    "apps/driftfs-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/shditz/DriftFS"
+
+[workspace.dependencies]
+# Error handling
+thiserror = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "fs", "net"] }
+tokio-util = "0.7"
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# HTTP & Networking
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+url = "2"
+
+# Cryptography & Hashing
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+
+# Secure Credential Storage
+keyring = "4"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# OS directories
+dirs = "5"
+tempfile = "3"
+
+# Internal crates
+driftfs-core = { path = "crates/driftfs-core" }
+driftfs-config = { path = "crates/driftfs-config" }
+driftfs-logging = { path = "crates/driftfs-logging" }
+driftfs-provider = { path = "crates/driftfs-provider" }
+driftfs-auth = { path = "crates/driftfs-auth" }
+driftfs-metadata = { path = "crates/driftfs-metadata" }
+driftfs-sync = { path = "crates/driftfs-sync" }
+driftfs-cache = { path = "crates/driftfs-cache" }
+driftfs-filesystem = { path = "crates/driftfs-filesystem" }
+driftfs-google-drive = { path = "crates/driftfs-google-drive" }
+driftfs-testkit = { path = "crates/driftfs-testkit" }
+driftfs-platform-windows = { path = "platforms/windows" }
+driftfs-platform-linux = { path = "platforms/linux" }
+driftfs-platform-macos = { path = "platforms/macos" }
+
+# Desktop GUI and System Tray
+slint = "1.9"
+slint-build = "1.9"
+tray-icon = "0.25"
+open = "5"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

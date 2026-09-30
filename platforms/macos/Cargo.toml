@@ -1,0 +1,23 @@
+[package]
+name = "driftfs-platform-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "macOS macFUSE / FileProvider filesystem adapter skeleton for DriftFS."
+
+[dependencies]
+driftfs-core = { workspace = true }
+driftfs-filesystem = { workspace = true }
+driftfs-provider = { workspace = true }
+driftfs-metadata = { workspace = true }
+driftfs-logging = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+driftfs-testkit = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

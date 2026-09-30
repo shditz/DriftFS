@@ -1,0 +1,193 @@
+import { Theme } from "theme.slint";
+
+export component Card inherits Rectangle {
+    in property <length> inner-padding: 18px;
+    in property <length> spacing: 12px;
+    
+    background: Theme.surface-card;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: Theme.radius-lg;
+    clip: true;
+
+    VerticalLayout {
+        padding: root.inner-padding;
+        spacing: root.spacing;
+        @children
+    }
+}
+
+export component StatusBadge inherits Rectangle {
+    in property <string> text: "Idle";
+    in property <color> badge-color: Theme.success;
+    in property <color> badge-bg: Theme.success-bg;
+
+    background: root.badge-bg;
+    border-color: root.badge-color;
+    border-width: 1px;
+    border-radius: Theme.radius-pill;
+    height: 26px;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        spacing: 6px;
+        alignment: center;
+
+        Rectangle {
+            width: 7px;
+            height: 7px;
+            border-radius: 4px;
+            background: root.badge-color;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            color: Theme.text-primary;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component PrimaryButton inherits Rectangle {
+    in property <string> text: "Continue";
+    in property <bool> enabled: true;
+    callback clicked();
+
+    background: !root.enabled ? Theme.surface-subtle : (touch.has-hover ? Theme.primary-hover : Theme.primary);
+    border-radius: Theme.radius-md;
+    height: 38px;
+    animate background { duration: 150ms; }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.text;
+        color: !root.enabled ? Theme.text-dim : #ffffff;
+        font-size: 13px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component SecondaryButton inherits Rectangle {
+    in property <string> text: "Cancel";
+    in property <bool> enabled: true;
+    callback clicked();
+
+    background: !root.enabled ? Theme.surface-subtle : (touch.has-hover ? Theme.surface-hover : Theme.surface);
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: Theme.radius-md;
+    height: 38px;
+    animate background { duration: 150ms; }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.text;
+        color: !root.enabled ? Theme.text-dim : Theme.text-primary;
+        font-size: 13px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component DangerButton inherits Rectangle {
+    in property <string> text: "Delete";
+    in property <bool> enabled: true;
+    callback clicked();
+
+    background: !root.enabled ? Theme.surface-subtle : (touch.has-hover ? Theme.danger-hover : Theme.danger-bg);
+    border-color: Theme.danger;
+    border-width: 1px;
+    border-radius: Theme.radius-md;
+    height: 38px;
+    animate background { duration: 150ms; }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.text;
+        color: !root.enabled ? Theme.text-dim : Theme.text-primary;
+        font-size: 13px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component ProgressBar inherits Rectangle {
+    in property <float> progress: 0.0;
+    in property <color> fill-color: Theme.primary;
+
+    height: 8px;
+    background: Theme.surface-subtle;
+    border-radius: 4px;
+    clip: true;
+
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width * Math.min(1.0, Math.max(0.0, root.progress));
+        height: parent.height;
+        background: root.fill-color;
+        border-radius: 4px;
+        animate width { duration: 250ms; easing: ease-out; }
+    }
+}
+
+export component SidebarItem inherits Rectangle {
+    in property <string> text: "Overview";
+    in property <string> icon-text: "[D]";
+    in property <bool> active: false;
+    callback clicked();
+
+    height: 40px;
+    background: root.active ? Theme.surface-hover : (touch.has-hover ? Theme.surface-subtle : transparent);
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: root.active ? Theme.border-subtle : transparent;
+    animate background { duration: 120ms; }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+        alignment: start;
+
+        Text {
+            text: root.icon-text;
+            color: root.active ? Theme.primary : Theme.text-muted;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.text;
+            color: root.active ? Theme.text-primary : Theme.text-secondary;
+            font-size: 13px;
+            font-weight: root.active ? 600 : 400;
+            vertical-alignment: center;
+        }
+    }
+}

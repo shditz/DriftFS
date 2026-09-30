@@ -1,0 +1,13 @@
+[package]
+name = "driftfs-core"
+description = "Core domain types, error hierarchy, and shared primitives for DriftFS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true
