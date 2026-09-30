@@ -22,7 +22,6 @@ if (-not (Test-Path $ExePath)) {
     Pop-Location
 }
 
-# 1. Create portable zip archive
 $ZipName = "driftfs-v$Version-windows-x86_64.zip"
 $ZipPath = Join-Path $DistDir $ZipName
 $TempPackageDir = Join-Path $DistDir "driftfs-v$Version-windows-x86_64"
@@ -46,7 +45,6 @@ Compress-Archive -Path "$TempPackageDir\*" -DestinationPath $ZipPath
 Remove-Item -Recurse -Force $TempPackageDir
 Write-Host "Created portable archive: $ZipPath" -ForegroundColor Green
 
-# 2. Build Inno Setup installer if compiler is available
 $Iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
 if (-not $Iscc) {
     $CommonPaths = @(
@@ -70,7 +68,6 @@ if ($Iscc) {
     Write-Host "Inno Setup compiler (ISCC.exe) not found; skipping installer creation." -ForegroundColor Yellow
 }
 
-# 3. Generate SHA256 checksums
 Push-Location $DistDir
 $Checksums = @()
 Get-ChildItem -File -Filter "*.zip" | ForEach-Object {
