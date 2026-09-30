@@ -72,31 +72,52 @@ For detailed component interaction, sequence diagrams, and security models, see 
 
 ---
 
-## Quick Start
+## Installation & Quick Start
 
-### Prerequisites
+### For Users (Pre-built Binaries)
 
-| Dependency | Minimum Version | Note |
-|---|---|---|
-| [Rust](https://rustup.rs/) | 1.75+ | Stable toolchain |
-| [WinFsp](https://winfsp.dev/) | 2.0+ | Install with "Developer" feature enabled |
-| C++ Compiler | MSVC | Via Visual Studio Installer or Build Tools for Visual Studio |
+1. Download the installer (`driftfs-setup-v0.1.0-windows-x86_64.exe`) or portable zip from [GitHub Releases](https://github.com/shditz/DriftFS/releases).
+2. Install [WinFsp](https://winfsp.dev/) (required for virtual drive mounting):
+   ```powershell
+   winget install -e --id WinFsp.WinFsp
+   ```
+3. Launch **DriftFS**, click **Connect Google Account**, and click **Mount Drive (G:)**.
 
-### 1. Clone & Build
+For detailed setup instructions, see the [Installation Guide](docs/installation.md).
 
-```sh
-git clone https://github.com/shditz/DriftFS.git
-cd DriftFS
-cargo build --all-targets
-```
+### For Developers (Build from Source)
 
-### 2. Configure Google OAuth
+Prerequisites: [Rust](https://rustup.rs/) 1.75+, [WinFsp](https://winfsp.dev/) (Developer feature enabled), and MSVC C++ build tools.
 
-DriftFS authenticates via OAuth 2.0 PKCE with tokens committed directly to your native OS Keyring (Windows Credential Manager). Configure local filesystem and cache parameters in `config.toml` (or copy from [`config.example.toml`](config.example.toml)):
+1. **Clone repository:**
+   ```sh
+   git clone https://github.com/shditz/DriftFS.git
+   cd DriftFS
+   ```
+2. **Build and run:**
+   ```sh
+   cargo run -p driftfs-ui
+   ```
+3. **Run tests:**
+   ```sh
+   cargo test --all
+   ```
+
+The application starts in the system tray. Right-click the tray icon to access mount controls, account management, and sync status.
+
+---
+
+## Configuration
+
+DriftFS stores user configuration and local metadata in standard OS application directories:
+
+* **Configuration File:** `%APPDATA%\DriftFS\config.toml` (or `~/.config/DriftFS/config.toml` on Unix)
+* **Metadata Database:** `%APPDATA%\DriftFS\metadata_{account_id}.db`
+* **OAuth Tokens:** Stored in the native OS credential manager (never in plaintext files)
+
+Example `config.toml` (see [`config.example.toml`](config.example.toml) for complete defaults):
 
 ```toml
-# %APPDATA%\DriftFS\config.toml
-
 version = 1
 
 [mount]
@@ -119,32 +140,6 @@ level = "info"
 ```
 
 > **Note:** DriftFS reads configuration exclusively from `config.toml` and the OS Keyring. Environment variables and `.env` files are not used for credential configuration.
-
-### 3. Run the Desktop Application
-
-```sh
-cargo run -p driftfs-ui
-```
-
-The application starts in the system tray. Right-click the tray icon to access mount controls, account management, and sync status.
-
-### 4. Run Tests
-
-```sh
-cargo test --all            # test suite
-cargo fmt --all -- --check  # formatting
-cargo clippy --all-targets  # linter
-```
-
----
-
-## Configuration
-
-DriftFS stores user configuration and local metadata in standard OS application directories:
-
-* **Configuration File:** `%APPDATA%\DriftFS\config.toml` (see [`config.example.toml`](config.example.toml))
-* **Metadata Database:** `%APPDATA%\DriftFS\metadata_{account_id}.db`
-* **OAuth Tokens:** Windows Credential Manager (never written to disk)
 
 For comprehensive setup details and platform requirements, see the [Installation Guide](docs/installation.md).
 
