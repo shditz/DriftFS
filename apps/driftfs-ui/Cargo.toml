@@ -14,9 +14,11 @@ driftfs-provider = { workspace = true }
 driftfs-google-drive = { workspace = true }
 driftfs-metadata = { workspace = true }
 driftfs-filesystem = { workspace = true }
-driftfs-platform-windows = { workspace = true }
 driftfs-sync = { workspace = true }
 driftfs-cache = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+driftfs-platform-windows = { workspace = true }
 
 tokio = { workspace = true }
 tokio-util = { workspace = true }

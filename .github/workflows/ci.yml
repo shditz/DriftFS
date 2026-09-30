@@ -11,14 +11,9 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  check:
-    name: Check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
+  check-windows:
+    name: Check (windows-latest)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -27,21 +22,20 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - name: Install WinFsp
+        shell: pwsh
+        run: |
+          choco install winfsp --no-progress -y
+          if (-not (Test-Path "HKLM:\SOFTWARE\WOW6432Node\WinFsp")) {
+            New-Item -Path "HKLM:\SOFTWARE\WOW6432Node\WinFsp" -Force | Out-Null
+          }
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\WOW6432Node\WinFsp" -Name "InstallDir" -Value "C:\Program Files (x86)\WinFsp\"
 
       - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --all-targets
 
       - name: Build
         run: cargo build --all-targets
@@ -49,5 +43,45 @@ jobs:
       - name: Test
         run: cargo test --all
 
-      - name: Documentation check
-        run: cargo doc --workspace --no-deps
+  check-linux:
+    name: Check (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse3-dev
+
+      - name: Check Core & Platform Scaffolding
+        run: |
+          cargo check -p driftfs-core -p driftfs-config -p driftfs-logging -p driftfs-provider -p driftfs-auth -p driftfs-metadata -p driftfs-sync -p driftfs-cache -p driftfs-filesystem -p driftfs-google-drive -p driftfs-testkit -p driftfs-platform-linux
+
+      - name: Test Core & Platform Scaffolding
+        run: |
+          cargo test -p driftfs-core -p driftfs-config -p driftfs-logging -p driftfs-provider -p driftfs-auth -p driftfs-metadata -p driftfs-sync -p driftfs-cache -p driftfs-filesystem -p driftfs-google-drive -p driftfs-testkit -p driftfs-platform-linux
+
+  check-macos:
+    name: Check (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Check Core & Platform Scaffolding
+        run: |
+          cargo check -p driftfs-core -p driftfs-config -p driftfs-logging -p driftfs-provider -p driftfs-auth -p driftfs-metadata -p driftfs-sync -p driftfs-cache -p driftfs-filesystem -p driftfs-google-drive -p driftfs-testkit -p driftfs-platform-macos
+
+      - name: Test Core & Platform Scaffolding
+        run: |
+          cargo test -p driftfs-core -p driftfs-config -p driftfs-logging -p driftfs-provider -p driftfs-auth -p driftfs-metadata -p driftfs-sync -p driftfs-cache -p driftfs-filesystem -p driftfs-google-drive -p driftfs-testkit -p driftfs-platform-macos

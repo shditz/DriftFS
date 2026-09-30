@@ -11,15 +11,16 @@ driftfs-filesystem = { workspace = true }
 driftfs-provider = { workspace = true }
 driftfs-metadata = { workspace = true }
 driftfs-logging = { workspace = true }
-winfsp_wrs = "0.4"
-widestring = "1.1"
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+winfsp_wrs = "0.4"
+widestring = "1.1"
 windows-sys = { version = "0.52.0", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
 
-[dev-dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 driftfs-testkit = { workspace = true }
 tempfile = { workspace = true }
 
