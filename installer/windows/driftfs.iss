@@ -45,6 +45,7 @@ Source: "..\..\assets\icons\driftfs.png"; DestDir: "{app}\assets"; Flags: ignore
 Source: "..\..\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\config.example.toml"; DestDir: "{app}"; DestName: "config.example.toml"; Flags: ignoreversion
+Source: "..\..\target\release\winfsp-x64.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\driftfs.ico"

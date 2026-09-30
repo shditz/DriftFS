@@ -37,6 +37,13 @@ Copy-Item (Join-Path $RepoRoot "README.md") $TempPackageDir
 Copy-Item (Join-Path $RepoRoot "LICENSE-MIT") $TempPackageDir
 Copy-Item (Join-Path $RepoRoot "LICENSE-APACHE") $TempPackageDir
 
+$WinfspDll = "C:\Program Files (x86)\WinFsp\bin\winfsp-x64.dll"
+if (Test-Path $WinfspDll) {
+    Copy-Item $WinfspDll -Destination (Split-Path $ExePath) -Force
+    Copy-Item $WinfspDll -Destination $TempPackageDir -Force
+    Write-Host "Bundled winfsp-x64.dll into package." -ForegroundColor Green
+}
+
 if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath
 }
