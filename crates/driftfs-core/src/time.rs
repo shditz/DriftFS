@@ -70,6 +70,49 @@ pub fn parse_iso_timestamp(iso: Option<&str>) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(total_secs as u64))
 }
 
+pub fn format_iso_timestamp(time: SystemTime) -> String {
+    let dur = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let total_secs = dur.as_secs();
+
+    let sec = total_secs % 60;
+    let total_mins = total_secs / 60;
+    let min = total_mins % 60;
+    let total_hours = total_mins / 60;
+    let hour = total_hours % 24;
+    let mut days = total_hours / 24;
+
+    let mut year = 1970;
+    loop {
+        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let days_in_year = if is_leap { 366 } else { 365 };
+        if days >= days_in_year {
+            days -= days_in_year;
+            year += 1;
+        } else {
+            break;
+        }
+    }
+
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let mut month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if is_leap {
+        month_days[1] = 29;
+    }
+
+    let mut month = 1;
+    for md in month_days {
+        if days >= md {
+            days -= md;
+            month += 1;
+        } else {
+            break;
+        }
+    }
+    let day = days + 1;
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

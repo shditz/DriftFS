@@ -1,7 +1,7 @@
 use crate::error::{MetadataError, Result};
 use rusqlite::Connection;
 
-const CURRENT_SCHEMA_VERSION: u32 = 4;
+const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
@@ -28,8 +28,11 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     if current_version < 3 {
         apply_v3(conn)?;
     }
-    if current_version < CURRENT_SCHEMA_VERSION {
+    if current_version < 4 {
         apply_v4(conn)?;
+    }
+    if current_version < CURRENT_SCHEMA_VERSION {
+        apply_v5(conn)?;
     }
 
     Ok(())
@@ -146,6 +149,28 @@ fn apply_v4(conn: &mut Connection) -> Result<()> {
     )
     .map_err(|e| MetadataError::MigrationFailed {
         version: 4,
+        reason: e.to_string(),
+    })?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+fn apply_v5(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+
+    tx.execute_batch(
+        "ALTER TABLE staging_journal ADD COLUMN direction TEXT NOT NULL DEFAULT 'upload';
+        ALTER TABLE staging_journal ADD COLUMN error_count INTEGER NOT NULL DEFAULT 0;
+
+        CREATE INDEX IF NOT EXISTS idx_staging_journal_state_dir
+            ON staging_journal (state, direction);
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (5, datetime('now'));",
+    )
+    .map_err(|e| MetadataError::MigrationFailed {
+        version: 5,
         reason: e.to_string(),
     })?;
 

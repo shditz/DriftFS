@@ -428,4 +428,66 @@ mod tests {
         let all_root = store.list_children(None).expect("list children");
         assert_eq!(all_root.len(), 51);
     }
+
+    #[test]
+    fn replace_file_id_and_sync_queue() {
+        let store = MetadataStore::open_in_memory().expect("open store");
+        let local_id = FileId::new_local();
+        let local_obj = StoredObject {
+            id: local_id.clone(),
+            parent_id: None,
+            name: "test.txt".into(),
+            remote_name: "test.txt".into(),
+            kind: ObjectKind::File,
+            size_bytes: Some(1024),
+            mime_type: Some("text/plain".into()),
+            created_at: None,
+            modified_at: None,
+            version: None,
+            sync_status: SyncStatus::Pending,
+            deleted: false,
+        };
+        store.insert_new_object(&local_obj).expect("insert local");
+        store
+            .record_staging_entry(2001, &local_id, "C:\\staging\\2001.tmp", None)
+            .expect("record staging");
+
+        let (count, bytes) = store.get_pending_sync_stats().expect("pending stats");
+        assert_eq!(count, 1);
+        assert_eq!(bytes, 1024);
+
+        let remote_obj = StoredObject {
+            id: FileId("remote_123".into()),
+            parent_id: None,
+            name: "test.txt".into(),
+            remote_name: "test.txt".into(),
+            kind: ObjectKind::File,
+            size_bytes: Some(1024),
+            mime_type: Some("text/plain".into()),
+            created_at: Some("2026-10-01T00:00:00Z".into()),
+            modified_at: Some("2026-10-01T00:00:00Z".into()),
+            version: Some("v1".into()),
+            sync_status: SyncStatus::Synced,
+            deleted: false,
+        };
+        store
+            .replace_file_id(&local_id, &remote_obj)
+            .expect("replace id");
+
+        let old_lookup = store.get_object(&local_id).expect("lookup old");
+        assert!(old_lookup.is_none());
+
+        let new_lookup = store
+            .get_object(&FileId("remote_123".into()))
+            .expect("lookup new");
+        assert!(new_lookup.is_some());
+        assert_eq!(new_lookup.unwrap().id.0, "remote_123");
+
+        store
+            .enqueue_delete(&FileId("remote_123".into()), None)
+            .expect("enqueue delete");
+        let uncommitted = store.list_uncommitted_staging().expect("list uncommitted");
+        assert_eq!(uncommitted.len(), 2);
+        assert_eq!(uncommitted[1].direction, "delete");
+    }
 }

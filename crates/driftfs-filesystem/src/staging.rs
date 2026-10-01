@@ -217,6 +217,53 @@ impl StagingManager {
         }
     }
 
+    pub fn release(&self, handle: VfsHandle) {
+        if let Ok(mut lock) = self.files.lock() {
+            let _ = lock.remove(&handle.0);
+        }
+    }
+
+    pub fn available_disk_space(&self) -> Result<u64> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            let mut wide: Vec<u16> = self.staging_dir.as_os_str().encode_wide().collect();
+            wide.push(0);
+
+            extern "system" {
+                fn GetDiskFreeSpaceExW(
+                    lpDirectoryName: *const u16,
+                    lpFreeBytesAvailableToCaller: *mut u64,
+                    lpTotalNumberOfBytes: *mut u64,
+                    lpTotalNumberOfFreeBytes: *mut u64,
+                ) -> i32;
+            }
+
+            let mut free_bytes: u64 = 0;
+            let res = unsafe {
+                GetDiskFreeSpaceExW(
+                    wide.as_ptr(),
+                    &mut free_bytes,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+
+            if res != 0 {
+                Ok(free_bytes)
+            } else {
+                Err(VfsError::Io(format!(
+                    "failed to query disk space: {}",
+                    std::io::Error::last_os_error()
+                )))
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(u64::MAX)
+        }
+    }
+
     pub fn staging_dir(&self) -> &Path {
         &self.staging_dir
     }

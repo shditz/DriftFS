@@ -13,7 +13,7 @@ use tray::{SystemTrayManager, TrayCommand};
 
 slint::include_modules!();
 
-fn format_bytes(bytes: u64) -> String {
+pub(crate) fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;

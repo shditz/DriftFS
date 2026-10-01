@@ -101,4 +101,6 @@ pub struct StagingJournalEntry {
     pub uploaded_bytes: u64,
     pub created_at: i64,
     pub updated_at: i64,
+    pub direction: String,
+    pub error_count: u32,
 }

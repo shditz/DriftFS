@@ -34,6 +34,9 @@ pub enum VfsError {
     #[error("rate limited by provider")]
     RateLimited,
 
+    #[error("disk is full")]
+    DiskFull,
+
     #[error("i/o error: {0}")]
     Io(String),
 }
@@ -50,6 +53,7 @@ impl VfsError {
             Self::NotDirectory => 20,      // ENOTDIR
             Self::IsDirectory => 21,       // EISDIR
             Self::InvalidPath => 22,       // EINVAL
+            Self::DiskFull => 28,          // ENOSPC
             Self::ReadOnly => 30,          // EROFS
             Self::DirectoryNotEmpty => 39, // ENOTEMPTY
         }
@@ -68,6 +72,7 @@ impl VfsError {
             Self::InvalidPath => -1073741773,       // STATUS_OBJECT_PATH_INVALID (0xC0000033)
             Self::ReadOnly => -1073741784,          // STATUS_MEDIA_WRITE_PROTECTED (0xC00000A8)
             Self::DirectoryNotEmpty => -1073741567, // STATUS_DIRECTORY_NOT_EMPTY (0xC0000101)
+            Self::DiskFull => -1073741801,          // STATUS_DISK_FULL (0xC000007F)
         }
     }
 }

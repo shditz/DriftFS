@@ -3,8 +3,10 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use driftfs_cache::{BoundedChunkCache, ChunkKey};
-use driftfs_core::{parse_iso_timestamp, sanitize_path, validate_file_name, ByteRange, FileId};
-use driftfs_metadata::{MetadataStore, StagingState, StoredObject};
+use driftfs_core::{
+    format_iso_timestamp, parse_iso_timestamp, sanitize_path, validate_file_name, ByteRange, FileId,
+};
+use driftfs_metadata::{MetadataStore, StagingState, StoredObject, SyncStatus};
 use driftfs_provider::{CloudProvider, ObjectKind};
 use tokio::sync::Semaphore;
 use tracing::{debug, info, instrument, warn};
@@ -414,13 +416,36 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
             return Err(VfsError::AlreadyExists);
         }
 
-        let parent_ref = self.effective_parent_id(&parent_id)?;
+        if let Ok(free_space) = self.staging.available_disk_space() {
+            const MIN_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+            if free_space < MIN_HEADROOM_BYTES {
+                warn!(
+                    free_space,
+                    min_headroom = MIN_HEADROOM_BYTES,
+                    "disk headroom threshold reached; rejecting new file creation"
+                );
+                return Err(VfsError::DiskFull);
+            }
+        }
 
-        let mut remote_meta = self.provider.create_file(&parent_ref, name).await?;
-        let file_id = remote_meta.id.clone();
-        remote_meta.parent_id = parent_id.clone();
+        let file_id = FileId::new_local();
+        let now_str = format_iso_timestamp(SystemTime::now());
 
-        self.metadata.upsert_object(&remote_meta)?;
+        let stored = StoredObject {
+            id: file_id.clone(),
+            parent_id: parent_id.clone(),
+            name: name.to_string(),
+            remote_name: name.to_string(),
+            kind: ObjectKind::File,
+            size_bytes: Some(0),
+            mime_type: None,
+            created_at: Some(now_str.clone()),
+            modified_at: Some(now_str),
+            version: None,
+            sync_status: SyncStatus::Pending,
+            deleted: false,
+        };
+        self.metadata.insert_new_object(&stored)?;
 
         let ino = file_id_to_ino(&file_id.0);
         let handle = self
@@ -455,12 +480,35 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
             return Err(VfsError::AlreadyExists);
         }
 
-        let parent_ref = self.effective_parent_id(&parent_id)?;
+        let dir_id = FileId::new_local();
+        let now_str = format_iso_timestamp(SystemTime::now());
 
-        let mut remote_meta = self.provider.create_directory(&parent_ref, &name).await?;
-        let dir_id = remote_meta.id.clone();
-        remote_meta.parent_id = parent_id;
-        self.metadata.upsert_object(&remote_meta)?;
+        let stored = StoredObject {
+            id: dir_id.clone(),
+            parent_id: parent_id.clone(),
+            name: name.clone(),
+            remote_name: name,
+            kind: ObjectKind::Directory,
+            size_bytes: None,
+            mime_type: Some("application/vnd.google-apps.folder".to_string()),
+            created_at: Some(now_str.clone()),
+            modified_at: Some(now_str),
+            version: None,
+            sync_status: SyncStatus::Pending,
+            deleted: false,
+        };
+        self.metadata.insert_new_object(&stored)?;
+
+        let _ = self.metadata.record_staging_entry(
+            {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static DIR_COUNTER: AtomicU64 = AtomicU64::new(0x6000_0000_0000_0000);
+                DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
+            },
+            &dir_id,
+            "",
+            parent_id.as_ref(),
+        );
 
         let ino = file_id_to_ino(&dir_id.0);
         Ok(VfsAttr::directory(ino, Some(SystemTime::now())))
@@ -553,6 +601,27 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
         }
 
         let file_id = entry.file_id.ok_or(VfsError::NotFound)?;
+
+        if file_id.is_local() {
+            if let Ok(entries) = self.metadata.list_uncommitted_staging() {
+                if let Some(stg) = entries.iter().find(|e| e.file_id == file_id) {
+                    let path = std::path::Path::new(&stg.staging_path);
+                    if path.exists() {
+                        use std::io::{Read, Seek, SeekFrom};
+                        if let Ok(mut f) = std::fs::File::open(path) {
+                            if f.seek(SeekFrom::Start(offset)).is_ok() {
+                                let mut buf = vec![0u8; to_read];
+                                if let Ok(n) = f.read(&mut buf) {
+                                    buf.truncate(n);
+                                    return Ok(buf);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(Vec::new());
+        }
 
         if let Some(ref cache) = self.chunk_cache {
             let version = self
@@ -691,31 +760,18 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
         let file_id = entry.file_id.ok_or(VfsError::NotFound)?;
 
         if let Some(ref staging_path) = entry.staging_path {
-            debug!(file_id = %file_id, "uploading staged content to provider");
+            let size = self.staging.size(handle).unwrap_or(entry.size);
+            let now_str = format_iso_timestamp(SystemTime::now());
             let _ = self
                 .metadata
-                .update_staging_state(handle.0, StagingState::Uploading);
-
-            let metadata_clone = Arc::clone(&self.metadata);
-            let handle_id = handle.0;
-            let on_session = Arc::new(move |session_uri: &str| {
-                let _ = metadata_clone.update_staging_session(handle_id, session_uri, 0);
-            });
-
-            let updated_meta = self
-                .provider
-                .upload_file_resumable(&file_id, staging_path, None, Some(on_session))
-                .await?;
-            let new_size = updated_meta.size_bytes.unwrap_or(0);
-
-            self.metadata.update_size_mtime_version(
+                .update_size_and_mtime(&file_id, size, Some(&now_str));
+            let _ = self.metadata.record_staging_entry(
+                handle.0,
                 &file_id,
-                new_size,
-                updated_meta.modified_at.as_deref(),
-                updated_meta.version.as_deref(),
-            )?;
-            let _ = self.metadata.remove_staging_entry(handle.0);
-            self.handles.update_size(handle, new_size)?;
+                &staging_path.to_string_lossy(),
+                None,
+            );
+            self.handles.update_size(handle, size)?;
             self.handles.clear_dirty(handle)?;
 
             if let Some(ref cache) = self.chunk_cache {
@@ -731,11 +787,7 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
         let entry = self.handles.get(handle)?;
 
         if entry.is_dirty {
-            if let Err(e) = self.flush(handle).await {
-                warn!(handle = handle.0, error = %e, "flush failed during close, staging file retained");
-                self.handles.release(handle)?;
-                return Err(e);
-            }
+            let _ = self.flush(handle).await;
             if let Some(ref cache) = self.chunk_cache {
                 if let Some(ref file_id) = entry.file_id {
                     let _ = cache.invalidate_file(file_id).await;
@@ -743,25 +795,14 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
             }
         }
 
-        self.staging.cleanup(handle);
-        let _ = self.metadata.remove_staging_entry(handle.0);
+        self.staging.release(handle);
         self.handles.release(handle)?;
         Ok(())
     }
 
     #[instrument(skip(self), level = "debug")]
     pub fn close(&self, handle: VfsHandle) -> Result<()> {
-        if let Ok(entry) = self.handles.get(handle) {
-            if entry.is_dirty {
-                warn!(
-                    handle = handle.0,
-                    "handle closed while still dirty; preserving staging file on disk"
-                );
-                self.handles.release(handle)?;
-                return Ok(());
-            }
-        }
-        self.staging.cleanup(handle);
+        self.staging.release(handle);
         self.handles.release(handle)?;
         Ok(())
     }
@@ -819,15 +860,18 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
         };
 
         if same_parent {
-            self.provider.rename(&obj.id, &effective_name).await?;
-            self.metadata.rename_object(&obj.id, &effective_name)?;
-        } else {
-            let new_parent_ref = self.effective_parent_id(&new_parent_id)?;
-
-            if effective_name != obj.remote_name {
+            if !obj.id.is_local() {
                 self.provider.rename(&obj.id, &effective_name).await?;
             }
-            self.provider.move_object(&obj.id, &new_parent_ref).await?;
+            self.metadata.rename_object(&obj.id, &effective_name)?;
+        } else {
+            if !obj.id.is_local() {
+                let new_parent_ref = self.effective_parent_id(&new_parent_id)?;
+                if effective_name != obj.remote_name {
+                    self.provider.rename(&obj.id, &effective_name).await?;
+                }
+                self.provider.move_object(&obj.id, &new_parent_ref).await?;
+            }
             self.metadata
                 .move_object(&obj.id, new_parent_id.as_ref(), &effective_name)?;
         }
@@ -842,8 +886,21 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
             return Err(VfsError::IsDirectory);
         }
 
-        self.provider.trash(&obj.id).await?;
         self.metadata.mark_trashed(&obj.id)?;
+
+        if obj.id.is_local() {
+            if let Ok(entries) = self.metadata.list_uncommitted_staging() {
+                for entry in entries {
+                    if entry.file_id == obj.id {
+                        let _ = self.metadata.remove_staging_entry(entry.handle_id);
+                        let _ = std::fs::remove_file(&entry.staging_path);
+                    }
+                }
+            }
+        } else {
+            self.metadata.enqueue_delete(&obj.id, None)?;
+        }
+
         if let Some(ref cache) = self.chunk_cache {
             let _ = cache.invalidate_file(&obj.id).await;
         }
@@ -861,8 +918,20 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
             return Err(VfsError::DirectoryNotEmpty);
         }
 
-        self.provider.trash(&obj.id).await?;
         self.metadata.mark_trashed(&obj.id)?;
+
+        if obj.id.is_local() {
+            if let Ok(entries) = self.metadata.list_uncommitted_staging() {
+                for entry in entries {
+                    if entry.file_id == obj.id {
+                        let _ = self.metadata.remove_staging_entry(entry.handle_id);
+                    }
+                }
+            }
+        } else {
+            self.metadata.enqueue_delete(&obj.id, None)?;
+        }
+
         Ok(())
     }
 
@@ -923,6 +992,26 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
                         updated_meta.modified_at.as_deref(),
                         updated_meta.version.as_deref(),
                     );
+                    if entry.file_id.is_local() {
+                        let stored = StoredObject {
+                            id: updated_meta.id.clone(),
+                            parent_id: updated_meta
+                                .parent_id
+                                .clone()
+                                .or_else(|| entry.parent_id.clone()),
+                            name: updated_meta.name.clone(),
+                            remote_name: updated_meta.name.clone(),
+                            kind: updated_meta.kind,
+                            size_bytes: updated_meta.size_bytes,
+                            mime_type: updated_meta.mime_type.clone(),
+                            created_at: updated_meta.created_at.clone(),
+                            modified_at: updated_meta.modified_at.clone(),
+                            version: updated_meta.version.clone(),
+                            sync_status: SyncStatus::Synced,
+                            deleted: false,
+                        };
+                        let _ = self.metadata.replace_file_id(&entry.file_id, &stored);
+                    }
                     let _ = self.metadata.remove_staging_entry(entry.handle_id);
                     let _ = std::fs::remove_file(&path);
                     if let Some(ref cache) = self.chunk_cache {

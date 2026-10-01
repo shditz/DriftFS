@@ -522,6 +522,96 @@ impl MetadataStore {
         Ok(false)
     }
 
+    pub fn replace_file_id(&self, old_id: &FileId, new_meta: &StoredObject) -> Result<()> {
+        let mut conn = self.lock_writer()?;
+        let tx = conn.transaction()?;
+
+        let parent_str = new_meta.parent_id.as_ref().map(|p| p.0.as_str());
+        let kind_str = match new_meta.kind {
+            ObjectKind::Directory => "directory",
+            ObjectKind::File => "file",
+        };
+        let size_val = new_meta.size_bytes.map(|s| s as i64);
+
+        tx.execute(
+            "UPDATE objects SET parent_id = ?1 WHERE parent_id = ?2",
+            params![new_meta.id.0, old_id.0],
+        )?;
+
+        let updated = tx.execute(
+            "UPDATE objects SET 
+                id = ?1, parent_id = ?2, name = ?3, remote_name = ?4, kind = ?5,
+                size_bytes = ?6, mime_type = ?7, created_at = ?8, modified_at = ?9,
+                version = ?10, sync_status = ?11, deleted = 0
+             WHERE id = ?12",
+            params![
+                new_meta.id.0,
+                parent_str,
+                new_meta.name,
+                new_meta.remote_name,
+                kind_str,
+                size_val,
+                new_meta.mime_type,
+                new_meta.created_at,
+                new_meta.modified_at,
+                new_meta.version,
+                new_meta.sync_status.as_str(),
+                old_id.0,
+            ],
+        )?;
+
+        if updated == 0 {
+            tx.execute(
+                "INSERT INTO objects (
+                    id, parent_id, name, remote_name, kind, size_bytes,
+                    mime_type, created_at, modified_at, version, sync_status, deleted
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)
+                ON CONFLICT(id) DO UPDATE SET
+                    parent_id = excluded.parent_id,
+                    name = excluded.name,
+                    remote_name = excluded.remote_name,
+                    kind = excluded.kind,
+                    size_bytes = excluded.size_bytes,
+                    mime_type = excluded.mime_type,
+                    created_at = excluded.created_at,
+                    modified_at = excluded.modified_at,
+                    version = excluded.version,
+                    sync_status = excluded.sync_status,
+                    deleted = 0",
+                params![
+                    new_meta.id.0,
+                    parent_str,
+                    new_meta.name,
+                    new_meta.remote_name,
+                    kind_str,
+                    size_val,
+                    new_meta.mime_type,
+                    new_meta.created_at,
+                    new_meta.modified_at,
+                    new_meta.version,
+                    new_meta.sync_status.as_str(),
+                ],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE staging_journal SET file_id = ?1 WHERE file_id = ?2",
+            params![new_meta.id.0, old_id.0],
+        )?;
+        tx.execute(
+            "UPDATE staging_journal SET parent_id = ?1 WHERE parent_id = ?2",
+            params![new_meta.id.0, old_id.0],
+        )?;
+
+        tx.execute(
+            "UPDATE synced_directories SET dir_id = ?1 WHERE dir_id = ?2",
+            params![new_meta.id.0, old_id.0],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn record_staging_entry(
         &self,
         handle_id: u64,
@@ -537,8 +627,8 @@ impl MetadataStore {
 
         conn.execute(
             "INSERT OR REPLACE INTO staging_journal 
-                (handle_id, file_id, staging_path, parent_id, state, session_uri, uploaded_bytes, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'staging', NULL, 0, ?5, ?5)",
+                (handle_id, file_id, staging_path, parent_id, state, session_uri, uploaded_bytes, created_at, updated_at, direction, error_count)
+             VALUES (?1, ?2, ?3, ?4, 'staging', NULL, 0, ?5, ?5, 'upload', 0)",
             params![
                 handle_id as i64,
                 file_id.0,
@@ -549,6 +639,62 @@ impl MetadataStore {
         )?;
 
         Ok(())
+    }
+
+    pub fn enqueue_delete(&self, file_id: &FileId, handle_id: Option<u64>) -> Result<()> {
+        let conn = self.lock_writer()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let h_id = handle_id.unwrap_or_else(|| {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static DEL_COUNTER: AtomicU64 = AtomicU64::new(0x7000_0000_0000_0000);
+            DEL_COUNTER.fetch_add(1, Ordering::Relaxed)
+        });
+
+        conn.execute(
+            "INSERT OR REPLACE INTO staging_journal 
+                (handle_id, file_id, staging_path, parent_id, state, session_uri, uploaded_bytes, created_at, updated_at, direction, error_count)
+             VALUES (?1, ?2, '', NULL, 'staging', NULL, 0, ?3, ?3, 'delete', 0)",
+            params![h_id as i64, file_id.0, now],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn increment_staging_error(&self, handle_id: u64) -> Result<u32> {
+        let conn = self.lock_writer()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        conn.execute(
+            "UPDATE staging_journal SET error_count = error_count + 1, updated_at = ?1 WHERE handle_id = ?2",
+            params![now, handle_id as i64],
+        )?;
+
+        let count: i64 = conn.query_row(
+            "SELECT error_count FROM staging_journal WHERE handle_id = ?1",
+            params![handle_id as i64],
+            |r| r.get(0),
+        )?;
+
+        Ok(count as u32)
+    }
+
+    pub fn get_pending_sync_stats(&self) -> Result<(usize, u64)> {
+        let conn = self.lock_reader()?;
+        let (count, bytes): (i64, Option<i64>) = conn.query_row(
+            "SELECT COUNT(*), SUM(COALESCE(o.size_bytes, 0)) 
+             FROM staging_journal j
+             LEFT JOIN objects o ON j.file_id = o.id
+             WHERE j.state != 'failed'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((count as usize, bytes.unwrap_or(0).max(0) as u64))
     }
 
     pub fn update_staging_state(&self, handle_id: u64, state: StagingState) -> Result<()> {
@@ -600,9 +746,9 @@ impl MetadataStore {
     pub fn list_uncommitted_staging(&self) -> Result<Vec<StagingJournalEntry>> {
         let conn = self.lock_reader()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT handle_id, file_id, staging_path, parent_id, state, session_uri, uploaded_bytes, created_at, updated_at
+            "SELECT handle_id, file_id, staging_path, parent_id, state, session_uri, uploaded_bytes, created_at, updated_at, direction, error_count
              FROM staging_journal
-             ORDER BY created_at ASC",
+             ORDER BY created_at ASC, rowid ASC",
         )?;
 
         let entries = stmt
@@ -616,6 +762,8 @@ impl MetadataStore {
                 let uploaded_bytes: Option<i64> = row.get(6)?;
                 let created_at: i64 = row.get(7)?;
                 let updated_at: i64 = row.get(8)?;
+                let direction: String = row.get(9)?;
+                let error_count: i64 = row.get(10)?;
 
                 Ok(StagingJournalEntry {
                     handle_id: handle_id as u64,
@@ -627,6 +775,8 @@ impl MetadataStore {
                     uploaded_bytes: uploaded_bytes.unwrap_or(0) as u64,
                     created_at,
                     updated_at,
+                    direction,
+                    error_count: error_count as u32,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

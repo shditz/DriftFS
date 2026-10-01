@@ -170,4 +170,54 @@ mod tests {
         assert_eq!(count, 1);
         assert!(cache.get(&key).await.unwrap().is_none());
     }
+
+    #[tokio::test]
+    async fn test_outbound_queue_sync() {
+        let mock = MockProvider::new();
+        mock.add_directory("root", "My Drive", None);
+        let provider = Arc::new(mock);
+        let store = Arc::new(MetadataStore::open_in_memory().expect("open store"));
+        let account = AccountId("test_acc".into());
+
+        let engine = SyncEngine::new(provider.clone(), store.clone(), account.clone());
+
+        let del_id = FileId("to_delete".into());
+        provider.add_file("to_delete", "del.txt", Some("root"), 100);
+        store.enqueue_delete(&del_id, None).expect("enqueue delete");
+
+        let staging_dir = tempfile::tempdir().expect("staging dir");
+        let local_id = FileId::new_local();
+        let staging_file = staging_dir.path().join("local.tmp");
+        std::fs::write(&staging_file, b"local data").expect("write local tmp");
+
+        let local_stored = driftfs_metadata::StoredObject {
+            id: local_id.clone(),
+            parent_id: None,
+            name: "new_upload.txt".into(),
+            remote_name: "new_upload.txt".into(),
+            kind: ObjectKind::File,
+            size_bytes: Some(10),
+            mime_type: Some("text/plain".into()),
+            created_at: None,
+            modified_at: None,
+            version: None,
+            sync_status: driftfs_metadata::SyncStatus::Pending,
+            deleted: false,
+        };
+        store.insert_new_object(&local_stored).expect("insert");
+        store
+            .record_staging_entry(5001, &local_id, &staging_file.to_string_lossy(), None)
+            .expect("record staging");
+
+        assert!(staging_file.exists());
+        let processed = engine
+            .process_outbound_queue()
+            .await
+            .expect("process outbound");
+        assert_eq!(processed, 2);
+
+        assert!(!staging_file.exists());
+        assert!(store.list_uncommitted_staging().unwrap().is_empty());
+        assert!(store.get_object(&local_id).unwrap().is_none());
+    }
 }

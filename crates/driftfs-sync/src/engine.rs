@@ -178,4 +178,223 @@ impl<P: CloudProvider> SyncEngine<P> {
 
         Ok(())
     }
+
+    pub async fn process_outbound_queue(&self) -> Result<usize> {
+        let entries = self.store.list_uncommitted_staging()?;
+        if entries.is_empty() {
+            return Ok(0);
+        }
+
+        let mut processed = 0;
+
+        for entry in entries {
+            if entry.state == driftfs_metadata::StagingState::Failed && entry.error_count >= 5 {
+                continue;
+            }
+
+            if entry.direction == "delete" {
+                match self.provider.trash(&entry.file_id).await {
+                    Ok(_) => {
+                        let _ = self.store.remove_staging_entry(entry.handle_id);
+                        processed += 1;
+                    }
+                    Err(e) => {
+                        if matches!(e, DriftFsError::NotFound { .. })
+                            || e.to_string().contains("404")
+                            || e.to_string().contains("not found")
+                        {
+                            let _ = self.store.remove_staging_entry(entry.handle_id);
+                            processed += 1;
+                        } else {
+                            tracing::warn!(
+                                handle = entry.handle_id,
+                                file_id = %entry.file_id,
+                                ?e,
+                                "outbound delete failed"
+                            );
+                            let err_count = self
+                                .store
+                                .increment_staging_error(entry.handle_id)
+                                .unwrap_or(0);
+                            if err_count >= 5 {
+                                let _ = self.store.update_staging_state(
+                                    entry.handle_id,
+                                    driftfs_metadata::StagingState::Failed,
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                let obj = self.store.get_object(&entry.file_id)?;
+                let (obj_name, obj_kind, parent_id) = match obj {
+                    Some(ref o) => (o.name.clone(), o.kind, o.parent_id.clone()),
+                    None => {
+                        let _ = self.store.remove_staging_entry(entry.handle_id);
+                        continue;
+                    }
+                };
+
+                let effective_parent = match parent_id {
+                    Some(ref p) => {
+                        if p.is_local() {
+                            continue;
+                        }
+                        p.clone()
+                    }
+                    None => self.root_id.clone(),
+                };
+
+                if obj_kind == driftfs_provider::ObjectKind::Directory {
+                    match self
+                        .provider
+                        .create_directory(&effective_parent, &obj_name)
+                        .await
+                    {
+                        Ok(remote_meta) => {
+                            let stored = StoredObject {
+                                id: remote_meta.id.clone(),
+                                parent_id: parent_id.clone(),
+                                name: obj_name.clone(),
+                                remote_name: obj_name,
+                                kind: driftfs_provider::ObjectKind::Directory,
+                                size_bytes: None,
+                                mime_type: remote_meta.mime_type,
+                                created_at: remote_meta.created_at,
+                                modified_at: remote_meta.modified_at,
+                                version: remote_meta.version,
+                                sync_status: driftfs_metadata::SyncStatus::Synced,
+                                deleted: false,
+                            };
+                            let _ = self.store.replace_file_id(&entry.file_id, &stored);
+                            let _ = self.store.remove_staging_entry(entry.handle_id);
+                            processed += 1;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                handle = entry.handle_id,
+                                dir_id = %entry.file_id,
+                                ?e,
+                                "outbound mkdir failed"
+                            );
+                            let err_count = self
+                                .store
+                                .increment_staging_error(entry.handle_id)
+                                .unwrap_or(0);
+                            if err_count >= 5 {
+                                let _ = self.store.update_staging_state(
+                                    entry.handle_id,
+                                    driftfs_metadata::StagingState::Failed,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    let staging_path = std::path::PathBuf::from(&entry.staging_path);
+                    if !staging_path.exists() {
+                        let _ = self.store.remove_staging_entry(entry.handle_id);
+                        continue;
+                    }
+
+                    let _ = self.store.update_staging_state(
+                        entry.handle_id,
+                        driftfs_metadata::StagingState::Uploading,
+                    );
+
+                    let store_clone = Arc::clone(&self.store);
+                    let handle_id = entry.handle_id;
+                    let on_session = Arc::new(move |session_uri: &str| {
+                        let _ = store_clone.update_staging_session(handle_id, session_uri, 0);
+                    });
+
+                    let upload_res = if entry.file_id.is_local() {
+                        match self
+                            .provider
+                            .create_file(&effective_parent, &obj_name)
+                            .await
+                        {
+                            Ok(created_meta) => {
+                                self.provider
+                                    .upload_file_resumable(
+                                        &created_meta.id,
+                                        &staging_path,
+                                        entry.session_uri.as_deref(),
+                                        Some(on_session),
+                                    )
+                                    .await
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        self.provider
+                            .upload_file_resumable(
+                                &entry.file_id,
+                                &staging_path,
+                                entry.session_uri.as_deref(),
+                                Some(on_session),
+                            )
+                            .await
+                    };
+
+                    match upload_res {
+                        Ok(updated_meta) => {
+                            let new_size = updated_meta.size_bytes.unwrap_or(0);
+                            if entry.file_id.is_local() {
+                                let stored = StoredObject {
+                                    id: updated_meta.id.clone(),
+                                    parent_id: parent_id.clone(),
+                                    name: obj_name.clone(),
+                                    remote_name: obj_name,
+                                    kind: driftfs_provider::ObjectKind::File,
+                                    size_bytes: Some(new_size),
+                                    mime_type: updated_meta.mime_type,
+                                    created_at: updated_meta.created_at,
+                                    modified_at: updated_meta.modified_at.clone(),
+                                    version: updated_meta.version.clone(),
+                                    sync_status: driftfs_metadata::SyncStatus::Synced,
+                                    deleted: false,
+                                };
+                                let _ = self.store.replace_file_id(&entry.file_id, &stored);
+                            } else {
+                                let _ = self.store.update_size_mtime_version(
+                                    &entry.file_id,
+                                    new_size,
+                                    updated_meta.modified_at.as_deref(),
+                                    updated_meta.version.as_deref(),
+                                );
+                            }
+
+                            let _ = self.store.remove_staging_entry(entry.handle_id);
+                            let _ = std::fs::remove_file(&staging_path);
+
+                            if let Some(ref cache) = self.chunk_cache {
+                                let _ = cache.invalidate_file(&updated_meta.id).await;
+                            }
+                            processed += 1;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                handle = entry.handle_id,
+                                file_id = %entry.file_id,
+                                ?e,
+                                "outbound file upload failed"
+                            );
+                            let err_count = self
+                                .store
+                                .increment_staging_error(entry.handle_id)
+                                .unwrap_or(0);
+                            if err_count >= 5 {
+                                let _ = self.store.update_staging_state(
+                                    entry.handle_id,
+                                    driftfs_metadata::StagingState::Failed,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(processed)
+    }
 }

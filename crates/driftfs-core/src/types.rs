@@ -4,6 +4,23 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FileId(pub String);
 
+static LOCAL_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl FileId {
+    pub fn new_local() -> Self {
+        let count = LOCAL_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        Self(format!("local_{now:x}_{count:x}"))
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.0.starts_with("local_")
+    }
+}
+
 impl fmt::Display for FileId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -97,5 +114,14 @@ mod tests {
     fn byte_range_end_saturates() {
         let r = ByteRange::new(u64::MAX - 10, 100);
         assert_eq!(r.end(), u64::MAX);
+    }
+
+    #[test]
+    fn local_file_id_uniqueness() {
+        let id1 = FileId::new_local();
+        let id2 = FileId::new_local();
+        assert!(id1.is_local());
+        assert!(id2.is_local());
+        assert_ne!(id1, id2);
     }
 }

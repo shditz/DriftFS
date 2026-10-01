@@ -53,6 +53,7 @@ pub struct AppController {
     auth_service: Arc<AuthService>,
     state: Mutex<AppState>,
     active_mount: Mutex<Option<PlatformMount>>,
+    active_store: Mutex<Option<Arc<MetadataStore>>>,
     sync_cancel: Mutex<Option<CancellationToken>>,
     chunk_cache: Mutex<Option<Arc<BoundedChunkCache>>>,
     rt_handle: tokio::runtime::Handle,
@@ -135,6 +136,7 @@ impl AppController {
             auth_service,
             state: Mutex::new(initial_state),
             active_mount: Mutex::new(None),
+            active_store: Mutex::new(None),
             sync_cancel: Mutex::new(None),
             chunk_cache: Mutex::new(None),
             rt_handle,
@@ -171,6 +173,24 @@ impl AppController {
 
     pub async fn state(&self) -> AppState {
         let guard = self.state.lock().await;
+        let mut dirty_count = guard.dirty_files_count;
+        let mut sync_status = guard.sync_status_text.clone();
+
+        if let Some(ref store) = *self.active_store.lock().await {
+            if let Ok((count, bytes)) = store.get_pending_sync_stats() {
+                dirty_count = count;
+                if count > 0 {
+                    sync_status = format!(
+                        "Syncing ({} remaining, {})",
+                        count,
+                        crate::format_bytes(bytes)
+                    );
+                } else if guard.is_mounted {
+                    sync_status = "Up to date".into();
+                }
+            }
+        }
+
         AppState {
             is_authenticated: guard.is_authenticated,
             account_email: guard.account_email.clone(),
@@ -181,9 +201,9 @@ impl AppController {
             drive_letter: guard.drive_letter.clone(),
             mount_status_text: guard.mount_status_text.clone(),
 
-            sync_status_text: guard.sync_status_text.clone(),
+            sync_status_text: sync_status,
             last_sync_time: guard.last_sync_time.clone(),
-            dirty_files_count: guard.dirty_files_count,
+            dirty_files_count: dirty_count,
 
             cache_used_bytes: guard.cache_used_bytes,
             cache_max_bytes: guard.cache_max_bytes,
@@ -587,6 +607,7 @@ impl AppController {
         });
 
         *self.active_mount.lock().await = Some(drift_mount);
+        *self.active_store.lock().await = Some(store.clone());
         *self.sync_cancel.lock().await = Some(sync_cancel);
         self.is_mounted_cache.store(true, Ordering::Relaxed);
 
@@ -612,6 +633,7 @@ impl AppController {
         if let Some(cancel) = self.sync_cancel.lock().await.take() {
             cancel.cancel();
         }
+        *self.active_store.lock().await = None;
 
         let mut mount_guard = self.active_mount.lock().await;
         if let Some(mut mount) = mount_guard.take() {
