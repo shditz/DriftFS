@@ -1,5 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -20,10 +18,17 @@ use crate::types::{OpenFlags, VfsAttr, VfsDirEntry, VfsHandle, VfsNodeType, VfsS
 pub const ROOT_INODE: u64 = 1;
 const MAX_CONCURRENT_RANGE_READS: usize = 16;
 
+/// Deterministic 64-bit FNV-1a hash algorithm for virtual filesystem inodes.
 pub fn file_id_to_ino(id: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    id.hash(&mut hasher);
-    let hash = hasher.finish();
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in id.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
     if hash <= 1 {
         hash + 2
     } else {
@@ -40,6 +45,7 @@ pub struct DriftFsVfs<P: CloudProvider> {
     root_folder_id: Option<FileId>,
     chunk_cache: Option<Arc<BoundedChunkCache>>,
     prefetch_enabled: bool,
+    quota: Arc<std::sync::RwLock<VfsStatFs>>,
 }
 
 impl<P: CloudProvider + 'static> DriftFsVfs<P> {
@@ -58,6 +64,7 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
             root_folder_id: Some(FileId("root".into())),
             chunk_cache: None,
             prefetch_enabled: true,
+            quota: Arc::new(std::sync::RwLock::new(VfsStatFs::default())),
         })
     }
 
@@ -76,8 +83,40 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
         self
     }
 
+    pub fn with_max_concurrent_reads(mut self, max: usize) -> Self {
+        let permits = if max > 0 {
+            max
+        } else {
+            MAX_CONCURRENT_RANGE_READS
+        };
+        self.read_semaphore = Arc::new(Semaphore::new(permits));
+        self
+    }
+
     pub fn chunk_cache(&self) -> Option<&Arc<BoundedChunkCache>> {
         self.chunk_cache.as_ref()
+    }
+
+    pub fn with_quota(self, total: u64, used: u64) -> Self {
+        if let Ok(mut q) = self.quota.write() {
+            *q = VfsStatFs::new(total, used);
+        }
+        self
+    }
+
+    pub fn with_quota_handle(mut self, quota: Arc<std::sync::RwLock<VfsStatFs>>) -> Self {
+        self.quota = quota;
+        self
+    }
+
+    pub fn set_quota(&self, total: u64, used: u64) {
+        if let Ok(mut q) = self.quota.write() {
+            *q = VfsStatFs::new(total, used);
+        }
+    }
+
+    pub fn quota_handle(&self) -> Arc<std::sync::RwLock<VfsStatFs>> {
+        Arc::clone(&self.quota)
     }
 
     pub fn provider(&self) -> &Arc<P> {
@@ -107,7 +146,7 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
         if segments.is_empty() {
             return Err(VfsError::InvalidPath);
         }
-        let name = segments.last().unwrap().clone();
+        let name = segments.last().ok_or(VfsError::InvalidPath)?.clone();
         let parent = if segments.len() == 1 {
             "/".to_string()
         } else {
@@ -828,7 +867,7 @@ impl<P: CloudProvider + 'static> DriftFsVfs<P> {
     }
 
     pub fn statfs(&self) -> VfsStatFs {
-        VfsStatFs::default()
+        self.quota.read().map(|q| *q).unwrap_or_default()
     }
 
     #[instrument(skip(self), level = "info")]

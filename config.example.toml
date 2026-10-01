@@ -1,6 +1,13 @@
 # DriftFS Configuration Template
 version = 1
 
+# Google Cloud OAuth 2.0 Credentials
+# Optional when using official release binaries with built-in default client credentials.
+# Required for custom Google Cloud projects.
+[auth]
+client_id = ""
+client_secret = "" # Optional for PKCE desktop applications
+
 [mount]
 # Drive letter on Windows (e.g. "G:") or directory path on Linux/macOS
 mount_point = "G:"
@@ -27,3 +34,7 @@ poll_interval_secs = 60
 [logging]
 # Log verbosity filter: "trace", "debug", "info", "warn", "error"
 level = "info"
+
+[gui]
+# Start minimized to system tray on launch (default: true)
+start_minimized = true

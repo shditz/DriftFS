@@ -76,18 +76,22 @@ For detailed component interaction, sequence diagrams, and security models, see 
 
 ### For Users (Pre-built Binaries)
 
-1. Download the installer (`driftfs-setup-v0.1.0-windows-x86_64.exe`) or portable zip from [GitHub Releases](https://github.com/shditz/DriftFS/releases).
+1. Download the installer (`driftfs-setup-v1.0.0-windows-x86_64.exe`) or portable zip from [GitHub Releases](https://github.com/shditz/DriftFS/releases).
 2. Install [WinFsp](https://winfsp.dev/) (required for virtual drive mounting):
    ```powershell
    winget install -e --id WinFsp.WinFsp
    ```
-3. Launch **DriftFS**, click **Connect Google Account**, and click **Mount Drive (G:)**.
+3. Launch **DriftFS**, click **Connect Google Drive**, and click **Connect (G:)**.
 
 For detailed setup instructions, see the [Installation Guide](docs/installation.md).
 
-### For Developers (Build from Source)
+### Prerequisites
 
-Prerequisites: [Rust](https://rustup.rs/) 1.75+, [WinFsp](https://winfsp.dev/) (Developer feature enabled), and MSVC C++ build tools.
+* [Rust](https://rustup.rs/) 1.75+
+* [WinFsp](https://winfsp.dev/) 2.0+ (Developer feature enabled during installation)
+* MSVC C++ build tools (via Visual Studio Installer)
+
+### For Developers (Build from Source)
 
 1. **Clone repository:**
    ```sh
@@ -112,13 +116,19 @@ The application starts in the system tray. Right-click the tray icon to access m
 DriftFS stores user configuration and local metadata in standard OS application directories:
 
 * **Configuration File:** `%APPDATA%\DriftFS\config.toml` (or `~/.config/DriftFS/config.toml` on Unix)
-* **Metadata Database:** `%APPDATA%\DriftFS\metadata_{account_id}.db`
+* **Account Registry:** `%APPDATA%\DriftFS\accounts.json` (or `~/.config/DriftFS/accounts.json` on Unix)
+* **Metadata Database:** `%LOCALAPPDATA%\DriftFS\metadata.db` (or `~/.local/share/DriftFS/metadata.db` on Unix)
+* **Local Chunk Cache:** `%LOCALAPPDATA%\driftfs\cache` (or `~/.cache/driftfs/cache` on Unix)
 * **OAuth Tokens:** Stored in the native OS credential manager (never in plaintext files)
 
 Example `config.toml` (see [`config.example.toml`](config.example.toml) for complete defaults):
 
 ```toml
 version = 1
+
+[auth]
+client_id = ""               # Optional if official release build; required for custom GCP project
+client_secret = ""           # Optional for PKCE desktop applications
 
 [mount]
 mount_point = "G:"
@@ -137,6 +147,9 @@ poll_interval_secs = 60
 
 [logging]
 level = "info"
+
+[gui]
+start_minimized = true
 ```
 
 > **Note:** DriftFS reads configuration exclusively from `config.toml` and the OS Keyring. Environment variables and `.env` files are not used for credential configuration.
@@ -149,6 +162,7 @@ For comprehensive setup details and platform requirements, see the [Installation
 |---|---|---|
 | `DRIFTFS_LOG` | Tracing log filter directive (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
 | `DRIFTFS_LOG_SECRETS` | If set in debug builds, shows redacted token previews in log output | Unset |
+| `DRIFTFS_DEFAULT_CLIENT_ID` | Compile-time default Google Cloud OAuth Client ID injection | Unset |
 
 ---
 
@@ -181,6 +195,7 @@ The DriftFS repository is structured as a Cargo workspace:
 Technical guides and specifications are located in the [`docs/`](docs) directory:
 
 - [Architecture & Data Flow](docs/architecture.md): System design, crate responsibilities, and security model.
+- [Database Schema & Migrations](docs/database.md): SQLite schema, tables, pragmas, and migration lifecycle.
 - [Installation Guide](docs/installation.md): Windows setup, WinFsp requirements, and OAuth configuration.
 - [Troubleshooting](docs/troubleshooting.md): Solutions for common WinFsp, network, and keyring issues.
 - [Release Guide](docs/release-guide.md): Versioning policy and maintainer release checklists.

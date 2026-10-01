@@ -55,8 +55,9 @@ impl MacosMount {
 
     #[cfg(target_os = "macos")]
     pub async fn mount(&mut self) -> std::result::Result<(), MacosPlatformError> {
-        self.mounted = true;
-        Ok(())
+        Err(MacosPlatformError::MountError(
+            "macOS macFUSE mount adapter not yet implemented; platform skeleton only".into(),
+        ))
     }
 
     #[cfg(not(target_os = "macos"))]

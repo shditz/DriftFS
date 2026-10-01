@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::platform::{find_available_drive_letter, MountConfig, PlatformMount};
 use driftfs_auth::{
     AccountStore, AuthService, GoogleOAuthClient, KeyringCredentialStore, OAuthConfig,
 };
@@ -12,7 +13,6 @@ use driftfs_core::{AccountId, DriftFsError, FileId, Result};
 use driftfs_filesystem::DriftFsVfs;
 use driftfs_google_drive::GoogleDriveProvider;
 use driftfs_metadata::MetadataStore;
-use driftfs_platform_windows::{find_available_drive_letter, DriftFsMount, MountConfig};
 use driftfs_sync::{SyncEngine, SyncWorker};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -39,7 +39,12 @@ pub struct AppState {
     pub auto_start: bool,
     pub start_minimized: bool,
     pub prefetch_enabled: bool,
+    pub auto_mount: bool,
     pub sync_interval_secs: u64,
+
+    pub client_id: String,
+    pub client_secret: String,
+    pub has_oauth_config: bool,
 
     pub activity_log: Vec<String>,
 }
@@ -47,13 +52,16 @@ pub struct AppState {
 pub struct AppController {
     auth_service: Arc<AuthService>,
     state: Mutex<AppState>,
-    active_mount: Mutex<Option<DriftFsMount>>,
+    active_mount: Mutex<Option<PlatformMount>>,
     sync_cancel: Mutex<Option<CancellationToken>>,
     chunk_cache: Mutex<Option<Arc<BoundedChunkCache>>>,
     rt_handle: tokio::runtime::Handle,
     is_busy: Arc<AtomicBool>,
     is_mounted_cache: Arc<AtomicBool>,
     cached_drive_letter: std::sync::RwLock<String>,
+    active_quota: Arc<std::sync::RwLock<driftfs_filesystem::VfsStatFs>>,
+    is_minimize_to_tray: Arc<AtomicBool>,
+    configured_drive_letter: std::sync::RwLock<String>,
 }
 
 impl AppController {
@@ -61,16 +69,24 @@ impl AppController {
         let config_path = DriftFsConfig::default_path();
         let config = DriftFsConfig::load(&config_path).unwrap_or_default();
 
-        let base_data_dir = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("DriftFS");
+        let base_data_dir = DriftFsConfig::default_data_dir();
         let cache_dir = config.cache.directory.clone();
         let _ = std::fs::create_dir_all(&base_data_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
 
+        let client_id = config.auth.client_id.clone();
+        let client_secret = config.auth.client_secret.clone();
+        let has_oauth_config = !client_id.trim().is_empty()
+            || driftfs_auth::get_build_time_default_client_id().is_some();
+
         let accounts = Arc::new(AccountStore::in_default_dir()?);
         let credentials = Arc::new(KeyringCredentialStore::default());
-        let oauth = GoogleOAuthClient::new(OAuthConfig::default());
+        let oauth_config = OAuthConfig {
+            client_id: client_id.clone(),
+            client_secret: client_secret.clone(),
+            ..Default::default()
+        };
+        let oauth = GoogleOAuthClient::new(oauth_config);
         let auth_service = Arc::new(AuthService::new(oauth, credentials, accounts));
 
         let initial_drive = config
@@ -89,7 +105,7 @@ impl AppController {
 
             is_mounted: false,
             drive_letter: initial_drive.clone(),
-            mount_status_text: "Unmounted".into(),
+            mount_status_text: "Disconnected".into(),
 
             sync_status_text: "Idle".into(),
             last_sync_time: "Not yet synced".into(),
@@ -100,17 +116,20 @@ impl AppController {
             cache_dir: cache_dir.clone(),
 
             auto_start: Self::check_windows_autostart(),
-            start_minimized: true,
+            start_minimized: config.gui.start_minimized,
             prefetch_enabled: config.network.prefetch_enabled,
+            auto_mount: config.mount.auto_mount,
             sync_interval_secs: config.sync.poll_interval_secs,
 
-            activity_log: vec![
-                "DriftFS initialized".into(),
-                "Ready to mount Google Drive".into(),
-            ],
+            client_id,
+            client_secret: client_secret.unwrap_or_default(),
+            has_oauth_config,
+
+            activity_log: vec!["DriftFS started".into()],
         };
 
-        let cached_drive_letter = std::sync::RwLock::new(initial_drive);
+        let cached_drive_letter = std::sync::RwLock::new(initial_drive.clone());
+        let is_minimize_to_tray = Arc::new(AtomicBool::new(config.gui.start_minimized));
 
         let controller = Arc::new(Self {
             auth_service,
@@ -122,6 +141,11 @@ impl AppController {
             is_busy: Arc::new(AtomicBool::new(false)),
             is_mounted_cache: Arc::new(AtomicBool::new(false)),
             cached_drive_letter,
+            active_quota: Arc::new(std::sync::RwLock::new(
+                driftfs_filesystem::VfsStatFs::default(),
+            )),
+            is_minimize_to_tray,
+            configured_drive_letter: std::sync::RwLock::new(initial_drive),
         });
 
         controller.init_cache().await;
@@ -132,6 +156,10 @@ impl AppController {
 
     pub fn is_mounted(&self) -> bool {
         self.is_mounted_cache.load(Ordering::Relaxed)
+    }
+
+    pub fn is_minimize_to_tray(&self) -> bool {
+        self.is_minimize_to_tray.load(Ordering::Relaxed)
     }
 
     pub fn current_drive_letter(&self) -> String {
@@ -164,7 +192,12 @@ impl AppController {
             auto_start: guard.auto_start,
             start_minimized: guard.start_minimized,
             prefetch_enabled: guard.prefetch_enabled,
+            auto_mount: guard.auto_mount,
             sync_interval_secs: guard.sync_interval_secs,
+
+            client_id: guard.client_id.clone(),
+            client_secret: guard.client_secret.clone(),
+            has_oauth_config: guard.has_oauth_config,
 
             activity_log: guard.activity_log.clone(),
         }
@@ -213,7 +246,7 @@ impl AppController {
                 state.account_email = account.email.clone();
                 drop(state);
 
-                self.add_log_entry(format!("Connected to Google Account: {}", account.email))
+                self.add_log_entry(format!("Signed in as {}", account.email))
                     .await;
                 self.refresh_drive_quota(&account.id).await;
             }
@@ -235,26 +268,107 @@ impl AppController {
                     .limit
                     .as_deref()
                     .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(15 * 1024 * 1024 * 1024);
+                    .unwrap_or(5 * 1024 * 1024 * 1024 * 1024);
                 let mut state = self.state.lock().await;
                 state.quota_used = used;
                 state.quota_total = total;
+
+                if let Ok(mut q) = self.active_quota.write() {
+                    *q = driftfs_filesystem::VfsStatFs::new(total, used);
+                }
             }
         }
     }
 
+    pub async fn save_oauth_credentials(
+        &self,
+        client_id: String,
+        client_secret: Option<String>,
+    ) -> Result<()> {
+        let config_path = DriftFsConfig::default_path();
+        let mut config = DriftFsConfig::load(&config_path).unwrap_or_default();
+
+        let trimmed_id = client_id.trim().to_string();
+        let trimmed_secret = client_secret.and_then(|s| {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        });
+
+        config.auth.client_id = trimmed_id.clone();
+        config.auth.client_secret = trimmed_secret.clone();
+        config.save(&config_path)?;
+
+        let oauth_config = OAuthConfig {
+            client_id: trimmed_id.clone(),
+            client_secret: trimmed_secret.clone(),
+            ..Default::default()
+        };
+        self.auth_service
+            .update_oauth_client(GoogleOAuthClient::new(oauth_config));
+
+        let has_build_time_default = driftfs_auth::get_build_time_default_client_id().is_some();
+        let mut state = self.state.lock().await;
+        state.client_id = trimmed_id.clone();
+        state.client_secret = trimmed_secret.unwrap_or_default();
+        state.has_oauth_config = !trimmed_id.is_empty() || has_build_time_default;
+        drop(state);
+
+        self.add_log_entry("OAuth credentials saved").await;
+        Ok(())
+    }
+
+    pub async fn reset_oauth_to_default(&self) -> Result<()> {
+        let config_path = DriftFsConfig::default_path();
+        let mut config = DriftFsConfig::load(&config_path).unwrap_or_default();
+
+        config.auth.client_id.clear();
+        config.auth.client_secret = None;
+        config.save(&config_path)?;
+
+        let oauth_config = OAuthConfig::default();
+        self.auth_service
+            .update_oauth_client(GoogleOAuthClient::new(oauth_config));
+
+        let has_build_time_default = driftfs_auth::get_build_time_default_client_id().is_some();
+        let mut state = self.state.lock().await;
+        state.client_id.clear();
+        state.client_secret.clear();
+        state.has_oauth_config = has_build_time_default;
+        drop(state);
+
+        self.add_log_entry("OAuth credentials reset to default")
+            .await;
+        Ok(())
+    }
+
     pub async fn start_oauth_flow(self: &Arc<Self>) -> Result<()> {
+        {
+            let state = self.state.lock().await;
+            let missing_config = !state.has_oauth_config;
+            drop(state);
+            if missing_config {
+                self.add_log_entry("Sign-in skipped: set a Client ID in Settings first.")
+                    .await;
+                return Err(DriftFsError::Configuration {
+                    message: "OAuth Client ID is not configured.".into(),
+                });
+            }
+        }
+
         if self.is_busy.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
 
-        self.add_log_entry("Starting Google sign-in...").await;
+        self.add_log_entry("Opening Google sign-in…").await;
         let session = match self.auth_service.start_login_flow().await {
             Ok(s) => s,
             Err(e) => {
                 self.is_busy.store(false, Ordering::SeqCst);
-                self.add_log_entry(format!("Sign-in failed to start: {e}"))
-                    .await;
+                self.add_log_entry(format!("Sign-in error: {e}")).await;
                 return Err(e);
             }
         };
@@ -287,7 +401,13 @@ impl AppController {
                 }
                 Err(e) => {
                     error!(?e, "OAuth login flow error");
-                    this.add_log_entry(format!("Sign-in failed: {e}")).await;
+                    let err_str = e.to_string();
+                    if err_str.contains("client_secret is missing") {
+                        this.add_log_entry("Sign-in failed: Client Secret is required by Google. Enter your Client Secret in Settings.")
+                            .await;
+                    } else {
+                        this.add_log_entry(format!("Sign-in failed: {e}")).await;
+                    }
                 }
             }
             is_busy.store(false, Ordering::SeqCst);
@@ -318,7 +438,7 @@ impl AppController {
         state.quota_total = 0;
         drop(state);
 
-        self.add_log_entry("Disconnected Google Account").await;
+        self.add_log_entry("Google account disconnected").await;
         Ok(())
     }
 
@@ -344,16 +464,13 @@ impl AppController {
 
         {
             let mut state = self.state.lock().await;
-            state.mount_status_text = "Mounting...".into();
+            state.mount_status_text = "Connecting...".into();
         }
 
         let preferred_letter = self
-            .state
-            .lock()
-            .await
-            .drive_letter
-            .chars()
-            .next()
+            .configured_drive_letter
+            .read()
+            .map(|d| d.chars().next().unwrap_or('G'))
             .unwrap_or('G');
 
         let available_letter = match find_available_drive_letter(Some(preferred_letter)) {
@@ -375,9 +492,7 @@ impl AppController {
             },
         };
 
-        let base_data_dir = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("DriftFS");
+        let base_data_dir = DriftFsConfig::default_data_dir();
         let db_path = base_data_dir.join("metadata.db");
         let staging_path = base_data_dir.join("staging");
 
@@ -393,6 +508,8 @@ impl AppController {
 
         let token_provider = self.auth_service.create_token_provider(account.id.clone());
         let provider = Arc::new(GoogleDriveProvider::new(token_provider));
+
+        self.refresh_drive_quota(&account.id).await;
 
         let mut vfs = match DriftFsVfs::new(store.clone(), provider.clone(), staging_path) {
             Ok(v) => v,
@@ -414,7 +531,24 @@ impl AppController {
         }
 
         let prefetch = self.state.lock().await.prefetch_enabled;
-        vfs = vfs.with_prefetch(prefetch);
+        let max_concurrent = {
+            let config_path = DriftFsConfig::default_path();
+            DriftFsConfig::load(&config_path)
+                .map(|c| c.network.max_concurrent_requests)
+                .unwrap_or(16)
+        };
+        vfs = vfs
+            .with_prefetch(prefetch)
+            .with_max_concurrent_reads(max_concurrent);
+
+        let (quota_total, quota_used) = {
+            let state = self.state.lock().await;
+            (state.quota_total, state.quota_used)
+        };
+        vfs = vfs
+            .with_quota_handle(Arc::clone(&self.active_quota))
+            .with_quota(quota_total, quota_used);
+
         let arc_vfs = Arc::new(vfs);
 
         let mount_config = MountConfig {
@@ -428,15 +562,15 @@ impl AppController {
             tracing::warn!(error = %e, "root bootstrap failed or partially completed; proceeding with mount");
         }
 
-        let mount_res = DriftFsMount::mount(arc_vfs, self.rt_handle.clone(), mount_config);
+        let mount_res = PlatformMount::mount(arc_vfs, self.rt_handle.clone(), mount_config);
         let drift_mount = match mount_res {
             Ok(m) => m,
             Err(e) => {
                 self.is_busy.store(false, Ordering::SeqCst);
-                let err_msg = format!("Mount failed: {e}. Check that WinFsp is installed.");
+                let err_msg = format!("Connection failed: {e}. Check that WinFsp is installed.");
                 self.add_log_entry(&err_msg).await;
                 let mut state = self.state.lock().await;
-                state.mount_status_text = "Mount Failed".into();
+                state.mount_status_text = "Connection Failed".into();
                 return Err(DriftFsError::Filesystem {
                     message: err_msg,
                     source: None,
@@ -464,11 +598,11 @@ impl AppController {
             let mut state = self.state.lock().await;
             state.is_mounted = true;
             state.drive_letter = drive_str.clone();
-            state.mount_status_text = format!("Mounted on {drive_str}");
+            state.mount_status_text = format!("Connected on {drive_str}");
             state.sync_status_text = "Up to date".into();
         }
 
-        self.add_log_entry(format!("Virtual drive mounted at {drive_str}"))
+        self.add_log_entry(format!("Google Drive connected at {drive_str}"))
             .await;
         self.is_busy.store(false, Ordering::SeqCst);
         Ok(())
@@ -486,15 +620,23 @@ impl AppController {
 
         self.is_mounted_cache.store(false, Ordering::Relaxed);
 
+        let default_drive = self
+            .configured_drive_letter
+            .read()
+            .map(|d| d.clone())
+            .unwrap_or_else(|_| "G:".to_string());
+        if let Ok(mut g) = self.cached_drive_letter.write() {
+            *g = default_drive.clone();
+        }
+
         let mut state = self.state.lock().await;
         state.is_mounted = false;
-        state.mount_status_text = "Unmounted".into();
+        state.drive_letter = default_drive;
+        state.mount_status_text = "Disconnected".into();
         state.sync_status_text = "Idle".into();
-        let drive = state.drive_letter.clone();
         drop(state);
 
-        self.add_log_entry(format!("Virtual drive {drive} unmounted"))
-            .await;
+        self.add_log_entry("Google Drive disconnected").await;
         Ok(())
     }
 
@@ -535,7 +677,10 @@ impl AppController {
         let config_path = DriftFsConfig::default_path();
         let mut config = DriftFsConfig::load(&config_path).unwrap_or_default();
         config.network.prefetch_enabled = state.prefetch_enabled;
-        config.mount.mount_point = state.drive_letter.clone();
+        if let Ok(drive) = self.configured_drive_letter.read() {
+            config.mount.mount_point = drive.clone();
+        }
+        config.gui.start_minimized = state.start_minimized;
         let _ = config.save(&config_path);
     }
 
@@ -565,7 +710,7 @@ impl AppController {
             use std::process::Command;
             if enabled {
                 if let Ok(exe) = std::env::current_exe() {
-                    let exe_str = format!("\"{}\"", exe.display());
+                    let exe_str = exe.to_string_lossy().to_string();
                     let _ = Command::new("reg")
                         .args([
                             "add",
@@ -600,15 +745,18 @@ impl AppController {
         let enabled = state.prefetch_enabled;
         drop(state);
         self.save_settings().await;
-        self.add_log_entry(format!("Smart pre-fetching set to: {enabled}"))
-            .await;
+        self.add_log_entry(format!("Pre-fetching: {enabled}")).await;
     }
 
     pub async fn toggle_start_minimized(&self) {
         let mut state = self.state.lock().await;
         state.start_minimized = !state.start_minimized;
+        let enabled = state.start_minimized;
+        self.is_minimize_to_tray.store(enabled, Ordering::Relaxed);
         drop(state);
         self.save_settings().await;
+        self.add_log_entry(format!("Minimize to tray: {enabled}"))
+            .await;
     }
 
     pub async fn toggle_autostart(&self) {
@@ -618,7 +766,30 @@ impl AppController {
         drop(state);
         Self::update_windows_autostart(enabled);
         self.save_settings().await;
-        self.add_log_entry(format!("Windows startup set to: {enabled}"))
+        self.add_log_entry(format!("Startup launch: {enabled}"))
+            .await;
+    }
+
+    pub async fn change_drive_letter(&self, new_letter: String) {
+        let trimmed = new_letter.trim();
+        let letter = trimmed
+            .chars()
+            .find(|c| c.is_ascii_alphabetic())
+            .map(|c| c.to_ascii_uppercase())
+            .unwrap_or('G');
+        let formatted = format!("{letter}:");
+        if let Ok(mut g) = self.configured_drive_letter.write() {
+            *g = formatted.clone();
+        }
+        if !self.is_mounted() {
+            if let Ok(mut g) = self.cached_drive_letter.write() {
+                *g = formatted.clone();
+            }
+            let mut state = self.state.lock().await;
+            state.drive_letter = formatted.clone();
+        }
+        self.save_settings().await;
+        self.add_log_entry(format!("Drive letter preference set to {formatted}"))
             .await;
     }
 }

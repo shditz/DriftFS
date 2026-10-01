@@ -7,11 +7,36 @@ pub const CONFIG_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftFsConfig {
     pub version: u32,
+    #[serde(default)]
+    pub auth: AuthConfig,
     pub mount: MountConfig,
     pub cache: CacheConfig,
     pub network: NetworkConfig,
     pub sync: SyncConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub gui: GuiConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuiConfig {
+    pub start_minimized: bool,
+}
+
+impl Default for GuiConfig {
+    fn default() -> Self {
+        Self {
+            start_minimized: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +71,7 @@ impl Default for DriftFsConfig {
     fn default() -> Self {
         Self {
             version: CONFIG_VERSION,
+            auth: AuthConfig::default(),
             mount: MountConfig {
                 mount_point: default_mount_point(),
                 auto_mount: false,
@@ -64,6 +90,7 @@ impl Default for DriftFsConfig {
             logging: LoggingConfig {
                 level: "info".into(),
             },
+            gui: GuiConfig::default(),
         }
     }
 }
@@ -117,6 +144,12 @@ impl DriftFsConfig {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("DriftFS")
             .join("config.toml")
+    }
+
+    pub fn default_data_dir() -> PathBuf {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("DriftFS")
     }
 }
 
@@ -191,5 +224,11 @@ level = "debug"
         let result = DriftFsConfig::load(Path::new("/nonexistent/config.toml"));
         assert!(result.is_ok());
         assert_eq!(result.unwrap().version, CONFIG_VERSION);
+    }
+
+    #[test]
+    fn default_data_dir_returns_valid_path() {
+        let path = DriftFsConfig::default_data_dir();
+        assert!(path.to_string_lossy().contains("DriftFS"));
     }
 }

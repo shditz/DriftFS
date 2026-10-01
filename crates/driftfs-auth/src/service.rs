@@ -27,9 +27,10 @@ pub struct LoginSession {
 }
 
 pub struct AuthService {
-    oauth: GoogleOAuthClient,
+    oauth: std::sync::RwLock<GoogleOAuthClient>,
     credentials: Arc<dyn CredentialStore>,
     accounts: Arc<AccountStore>,
+    refresh_lock: tokio::sync::Mutex<()>,
 }
 
 impl AuthService {
@@ -39,9 +40,10 @@ impl AuthService {
         accounts: Arc<AccountStore>,
     ) -> Self {
         Self {
-            oauth,
+            oauth: std::sync::RwLock::new(oauth),
             credentials,
             accounts,
+            refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -51,6 +53,21 @@ impl AuthService {
 
     pub fn credentials(&self) -> &Arc<dyn CredentialStore> {
         &self.credentials
+    }
+
+    pub fn oauth_client(&self) -> GoogleOAuthClient {
+        self.oauth
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_else(|e| e.into_inner().clone())
+    }
+
+    pub fn update_oauth_client(&self, client: GoogleOAuthClient) {
+        if let Ok(mut lock) = self.oauth.write() {
+            *lock = client;
+        } else if let Err(poisoned) = self.oauth.write() {
+            *poisoned.into_inner() = client;
+        }
     }
 
     pub async fn start_login_flow(&self) -> Result<LoginSession> {
@@ -63,7 +80,8 @@ impl AuthService {
             .map(|_| rng.gen_range(b'a'..=b'z') as char)
             .collect();
 
-        let auth_url = self.oauth.build_auth_url(&pkce, &state, &redirect_uri)?;
+        let oauth = self.oauth_client();
+        let auth_url = oauth.build_auth_url(&pkce, &state, &redirect_uri)?;
 
         Ok(LoginSession {
             auth_url,
@@ -83,12 +101,12 @@ impl AuthService {
             GoogleOAuthClient::listen_for_callback(session.listener, &session.state, timeout_dur)
                 .await?;
 
-        let token = self
-            .oauth
+        let oauth = self.oauth_client();
+        let token = oauth
             .exchange_code(&code, &session.pkce.code_verifier, &session.redirect_uri)
             .await?;
 
-        let userinfo = self.oauth.fetch_userinfo(&token.access_token).await?;
+        let userinfo = oauth.fetch_userinfo(&token.access_token).await?;
 
         // Prefix prevents ID collisions across multiple identity providers.
         let account_id = AccountId(format!("google:{}", userinfo.sub));
@@ -117,6 +135,16 @@ impl AuthService {
     }
 
     pub async fn get_valid_access_token(&self, account_id: &AccountId) -> Result<String> {
+        let token = self.credentials.load_token(account_id)?.ok_or_else(|| {
+            DriftFsError::auth(format!("no credentials found for account {account_id}"))
+        })?;
+
+        if !token.is_expired() {
+            return Ok(token.access_token);
+        }
+
+        let _guard = self.refresh_lock.lock().await;
+
         let mut token = self.credentials.load_token(account_id)?.ok_or_else(|| {
             DriftFsError::auth(format!("no credentials found for account {account_id}"))
         })?;
@@ -129,7 +157,8 @@ impl AuthService {
             })?;
 
             tracing::info!(account_id = %account_id, "refreshing expired OAuth token");
-            let refreshed = self.oauth.refresh_access_token(refresh_token).await?;
+            let oauth = self.oauth_client();
+            let refreshed = oauth.refresh_access_token(refresh_token).await?;
 
             self.credentials.save_token(account_id, &refreshed)?;
             token = refreshed;
@@ -139,6 +168,8 @@ impl AuthService {
     }
 
     pub async fn force_refresh_access_token(&self, account_id: &AccountId) -> Result<String> {
+        let _guard = self.refresh_lock.lock().await;
+
         let token = self.credentials.load_token(account_id)?.ok_or_else(|| {
             DriftFsError::auth(format!("no credentials found for account {account_id}"))
         })?;
@@ -150,7 +181,8 @@ impl AuthService {
         })?;
 
         tracing::info!(account_id = %account_id, "force-refreshing OAuth token");
-        let refreshed = self.oauth.refresh_access_token(refresh_token).await?;
+        let oauth = self.oauth_client();
+        let refreshed = oauth.refresh_access_token(refresh_token).await?;
 
         self.credentials.save_token(account_id, &refreshed)?;
         Ok(refreshed.access_token)

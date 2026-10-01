@@ -25,6 +25,10 @@ struct GoogleTokenResponse {
     scope: Option<String>,
 }
 
+pub fn get_build_time_default_client_id() -> Option<&'static str> {
+    option_env!("DRIFTFS_DEFAULT_CLIENT_ID").filter(|s| !s.trim().is_empty())
+}
+
 #[derive(Clone)]
 pub struct GoogleOAuthClient {
     config: OAuthConfig,
@@ -46,12 +50,27 @@ impl GoogleOAuthClient {
         &self.config
     }
 
+    pub fn effective_client_id(&self) -> Result<&str> {
+        let trimmed = self.config.client_id.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+        if let Some(default_id) = get_build_time_default_client_id() {
+            return Ok(default_id);
+        }
+        Err(DriftFsError::Configuration {
+            message: "Google OAuth Client ID is not configured. Please provide your Client ID in Settings or config.toml.".into(),
+        })
+    }
+
     pub fn build_auth_url(
         &self,
         pkce: &PkceChallenge,
         state: &str,
         redirect_uri: &str,
     ) -> Result<String> {
+        let client_id = self.effective_client_id()?;
+
         let mut url =
             Url::parse(&self.config.auth_url).map_err(|e| DriftFsError::Configuration {
                 message: format!("invalid auth_url: {e}"),
@@ -60,7 +79,7 @@ impl GoogleOAuthClient {
         let scopes = self.config.scopes.join(" ");
 
         url.query_pairs_mut()
-            .append_pair("client_id", &self.config.client_id)
+            .append_pair("client_id", client_id)
             .append_pair("redirect_uri", redirect_uri)
             .append_pair("response_type", "code")
             .append_pair("scope", &scopes)
@@ -225,10 +244,14 @@ impl GoogleOAuthClient {
         code_verifier: &str,
         redirect_uri: &str,
     ) -> Result<SecretToken> {
+        let client_id = self.effective_client_id()?;
         let mut form = HashMap::new();
-        form.insert("client_id", self.config.client_id.as_str());
+        form.insert("client_id", client_id);
         if let Some(secret) = &self.config.client_secret {
-            form.insert("client_secret", secret.as_str());
+            let trimmed = secret.trim();
+            if !trimmed.is_empty() {
+                form.insert("client_secret", trimmed);
+            }
         }
         form.insert("code", code);
         form.insert("code_verifier", code_verifier);
@@ -275,10 +298,14 @@ impl GoogleOAuthClient {
     }
 
     pub async fn refresh_access_token(&self, refresh_token: &str) -> Result<SecretToken> {
+        let client_id = self.effective_client_id()?;
         let mut form = HashMap::new();
-        form.insert("client_id", self.config.client_id.as_str());
+        form.insert("client_id", client_id);
         if let Some(secret) = &self.config.client_secret {
-            form.insert("client_secret", secret.as_str());
+            let trimmed = secret.trim();
+            if !trimmed.is_empty() {
+                form.insert("client_secret", trimmed);
+            }
         }
         form.insert("refresh_token", refresh_token);
         form.insert("grant_type", "refresh_token");
@@ -483,5 +510,32 @@ mod tests {
             escaped,
             "&lt;div class=&quot;test&quot; id=&#39;foo&#39;&gt;&amp;bar&lt;/div&gt;"
         );
+    }
+
+    #[test]
+    fn effective_client_id_prefers_config_over_default() {
+        let config = OAuthConfig {
+            client_id: "configured-id-123".into(),
+            ..Default::default()
+        };
+        let client = GoogleOAuthClient::new(config);
+        assert_eq!(client.effective_client_id().unwrap(), "configured-id-123");
+    }
+
+    #[test]
+    fn effective_client_id_empty_config_handles_fallback() {
+        let config = OAuthConfig {
+            client_id: "   ".into(),
+            ..Default::default()
+        };
+        let client = GoogleOAuthClient::new(config);
+        match get_build_time_default_client_id() {
+            Some(default_id) => {
+                assert_eq!(client.effective_client_id().unwrap(), default_id);
+            }
+            None => {
+                assert!(client.effective_client_id().is_err());
+            }
+        }
     }
 }

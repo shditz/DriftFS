@@ -2,7 +2,7 @@
 ; Defines installation layout, WinFsp dependency detection, shortcuts, and uninstallation.
 
 #define MyAppName "DriftFS"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "DriftFS Contributors"
 #define MyAppURL "https://github.com/shditz/DriftFS"
 #define MyAppExeName "driftfs-ui.exe"

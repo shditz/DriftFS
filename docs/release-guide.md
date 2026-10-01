@@ -25,7 +25,7 @@ cargo fmt --all -- --check
 # 2. Static Analysis Linting
 cargo clippy --all-targets
 
-# 3. Test Suite (all 112+ tests across monorepo)
+# 3. Test Suite (all 109 tests across workspace crates)
 cargo test --all
 ```
 
@@ -40,19 +40,32 @@ Update the version number across the following files:
 1. **Workspace Definition** (`Cargo.toml`):
    ```toml
    [workspace.package]
-   version = "0.1.0"
+   version = "1.0.0"
    ```
 2. **Windows Installer Script** (`installer/windows/driftfs.iss`):
    ```pascal
-   #define MyAppVersion "0.1.0"
+   #define MyAppVersion "1.0.0"
    ```
 3. **Changelog** (`CHANGELOG.md`):
-   - Update `[Unreleased]` to the target version and current date (e.g. `## [0.1.0] - 2026-09-30`).
+   - Update `[Unreleased]` to the target version and current date (e.g. `## [1.0.0] - 2026-10-01`).
    - Ensure all changes are categorized under `Added`, `Changed`, `Fixed`, or `Removed`.
 
 ---
 
-## 4. Local Packaging & Checksum Verification
+## 4. Build-Time OAuth Client ID Injection
+
+For official production releases, you can inject a default Google Cloud OAuth Client ID during compilation so end-users do not need to create their own Google Cloud Project:
+
+```powershell
+$env:DRIFTFS_DEFAULT_CLIENT_ID = "your-client-id.apps.googleusercontent.com"
+cargo build --release -p driftfs-ui
+```
+
+When unset, the application allows users to supply custom credentials via the Settings tab or `config.toml`.
+
+---
+
+## 5. Local Packaging & Checksum Verification
 
 Run the packaging script to generate the Windows release payload:
 
@@ -74,7 +87,7 @@ Get-FileHash .\dist\driftfs-v0.1.0-windows-x86_64.zip -Algorithm SHA256
 
 ---
 
-## 5. Tagging & CI/CD Deployment
+## 6. Tagging & CI/CD Deployment
 
 1. Commit all version bumps and changelog updates:
    ```bash
@@ -95,8 +108,7 @@ Get-FileHash .\dist\driftfs-v0.1.0-windows-x86_64.zip -Algorithm SHA256
 
 4. The GitHub Actions release workflow (`.github/workflows/release.yml`) triggers automatically:
    - Compiles Windows x86_64 release binary and Inno Setup installer.
-   - Builds Unix distribution packages.
-   - Aggregates and verifies SHA256 checksums.
-   - Drafts a GitHub Release containing all binaries and checksums.
+   - Generates SHA256 checksums manifest.
+   - Publishes a GitHub Release containing Windows zip and setup installer assets (Unix packaging pipelines will be enabled with native FUSE releases).
 
-5. Inspect the draft release in GitHub Releases, review release notes against `CHANGELOG.md`, and publish.
+5. Inspect the release in GitHub Releases, review release notes against `CHANGELOG.md`, and publish.

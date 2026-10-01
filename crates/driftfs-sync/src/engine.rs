@@ -50,7 +50,15 @@ impl<P: CloudProvider> SyncEngine<P> {
 
     fn is_root_parent(&self, parent_id: Option<&FileId>) -> bool {
         match parent_id {
-            Some(p) => p == &self.root_id || p.0 == "root",
+            Some(p) => {
+                p == &self.root_id
+                    || p.0 == "root"
+                    || !self
+                        .store
+                        .get_object(p)
+                        .map(|opt| opt.is_some())
+                        .unwrap_or(true)
+            }
             None => true,
         }
     }
@@ -68,9 +76,7 @@ impl<P: CloudProvider> SyncEngine<P> {
     pub async fn bootstrap_root(&self) -> Result<Vec<StoredObject>> {
         let mut children = self.provider.list_children(&self.root_id).await?;
         for child in &mut children {
-            if self.is_root_parent(child.parent_id.as_ref()) {
-                child.parent_id = None;
-            }
+            child.parent_id = None;
         }
 
         if !children.is_empty() {
@@ -84,6 +90,8 @@ impl<P: CloudProvider> SyncEngine<P> {
             }
         }
 
+        let _ = self.store.mark_directory_synced(None);
+        let _ = self.store.normalize_root_orphans();
         let stored = self.store.list_children(None)?;
         Ok(stored)
     }

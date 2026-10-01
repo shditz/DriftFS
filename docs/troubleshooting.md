@@ -85,7 +85,7 @@ mount_point = "X:"   # Use any available letter
 
 ```toml
 [cache]
-directory = "cache"           # Relative to %APPDATA%\DriftFS
+directory = "cache"           # Defaults to %LOCALAPPDATA%\driftfs\cache if omitted
 max_size_bytes = 536870912    # 512 MB
 ```
 

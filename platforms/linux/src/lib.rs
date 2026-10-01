@@ -51,8 +51,9 @@ impl LinuxMount {
 
     #[cfg(target_os = "linux")]
     pub async fn mount(&mut self) -> std::result::Result<(), LinuxPlatformError> {
-        self.mounted = true;
-        Ok(())
+        Err(LinuxPlatformError::Fuse(
+            "linux FUSE kernel mount adapter not yet implemented; platform skeleton only".into(),
+        ))
     }
 
     #[cfg(not(target_os = "linux"))]

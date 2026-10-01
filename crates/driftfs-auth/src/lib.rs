@@ -6,6 +6,6 @@ mod types;
 
 pub use account_store::{AccountRegistry, AccountStore};
 pub use credential_store::{CredentialStore, InMemoryCredentialStore, KeyringCredentialStore};
-pub use oauth::{GoogleOAuthClient, GoogleUserInfo};
+pub use oauth::{get_build_time_default_client_id, GoogleOAuthClient, GoogleUserInfo};
 pub use service::{AuthService, LoginSession, TokenProvider};
 pub use types::{AccountIdentity, OAuthConfig, PkceChallenge, SecretToken};

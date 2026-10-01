@@ -124,7 +124,31 @@ sequenceDiagram
     Poller->>Meta: Commit transaction
 ```
 
-### 4. Cache Eviction & Prefetching
+### 4. Write & Mutation Pipeline Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Writer as OS File Writer
+    participant VFS as Virtual Filesystem
+    participant Meta as SQLite Metadata
+    participant Stage as Staging Journal (.tmp)
+    participant Provider as Google Drive API
+
+    Writer->>VFS: Write(file_id, offset, data)
+    VFS->>Stage: Buffer dirty bytes in staging file
+    VFS->>Meta: Record staging entry in staging_journal
+    Writer->>VFS: Flush / Close(file_id)
+    VFS->>Meta: Update object size, mtime, and sync_status='syncing'
+    VFS->>Provider: Stream upload (resumable multipart session)
+    Provider->>Google Drive: Upload bytes
+    Google Drive-->>Provider: Updated metadata (version, md5)
+    Provider-->>VFS: Upload complete
+    VFS->>Meta: Update object version, clear staging_journal
+    VFS->>Stage: Delete temporary staging file
+```
+
+### 5. Cache Eviction & Prefetching
 
 The `driftfs-cache` crate implements a bounded chunk cache with watermark-based LRU eviction:
 
@@ -148,6 +172,6 @@ The `driftfs-cache` crate implements a bounded chunk cache with watermark-based 
 3. **PKCE (RFC 7636)**: Authorization flows use 64-character high-entropy verifiers with SHA-256 challenges, preventing authorization code interception attacks.
 4. **Crash Safety**: In-memory registry and metadata files utilize atomic write-and-rename semantics (`.tmp` write followed by rename) to prevent state corruption during sudden process termination or power loss.
 5. **Metadata Atomic Transaction**: Applying remote change batches (`objects`) and advancing the synchronization token (`sync_checkpoints`) strictly occurs within a single atomic SQLite transaction, ensuring crash consistency and zero state drift.
-6. **Physical Account Isolation & Disambiguation**: Each linked account maintains an isolated SQLite database file (`metadata_{account_id}.db`) in WAL mode. Remote name collisions in identical parent directories are automatically disambiguated with stable local display names (`name`) while preserving original cloud identities (`remote_name`).
-7. **Google Workspace File Pointers**: Native cloud documents (`application/vnd.google-apps.*` such as Docs, Sheets, Slides) do not have raw binary content. DriftFS surfaces them as web shortcut pointers (`.gdoc`, `.gsheet`, `.gslides`) with Google Docs URLs, avoiding runtime binary read failures and enabling direct browser viewing when clicked.
+6. **Local Database & Name Disambiguation**: The local SQLite database (`%LOCALAPPDATA%\DriftFS\metadata.db`) operates in WAL mode (`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`). Remote name collisions in identical parent directories are automatically disambiguated with stable local display names (`name`) while preserving original cloud identities (`remote_name`).
+7. **Google Workspace File Pointers**: Native cloud documents (`application/vnd.google-apps.*` such as Docs, Sheets, Slides) do not have raw binary content. DriftFS surfaces them as `.url` Windows Internet Shortcuts with Google Docs target URLs, avoiding runtime binary read failures and enabling direct browser viewing when clicked.
 

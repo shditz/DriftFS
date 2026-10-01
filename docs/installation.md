@@ -18,7 +18,7 @@ This guide covers installing and configuring DriftFS on Windows, Linux, and macO
 
 ### Option 1: Windows Installer (Recommended)
 
-1. Download the latest installer `driftfs-setup-v0.1.0-windows-x86_64.exe` from the [GitHub Releases](https://github.com/shditz/DriftFS/releases).
+1. Download the latest installer `driftfs-setup-v1.0.0-windows-x86_64.exe` from the [GitHub Releases](https://github.com/shditz/DriftFS/releases).
 2. Run the installer. The setup wizard automatically checks for the WinFsp runtime:
    - If WinFsp is missing, the installer prompts to open the official WinFsp download page.
    - Install WinFsp, then complete the DriftFS setup wizard.
@@ -26,7 +26,7 @@ This guide covers installing and configuring DriftFS on Windows, Linux, and macO
 
 ### Option 2: Portable Zip Archive
 
-1. Download `driftfs-v0.1.0-windows-x86_64.zip` from [GitHub Releases](https://github.com/shditz/DriftFS/releases).
+1. Download `driftfs-v1.0.0-windows-x86_64.zip` from [GitHub Releases](https://github.com/shditz/DriftFS/releases).
 2. Ensure [WinFsp](https://winfsp.dev/rel/) is installed on your system. You can install it using `winget`:
    ```powershell
    winget install -e --id WinFsp.WinFsp
@@ -58,31 +58,79 @@ cargo build --release -p driftfs-ui
 
 ---
 
+## Linux Installation (Scaffolding)
+
+> **Platform Status:** Early Scaffolding. The workspace contains the Linux crate structure and mount configuration models (`driftfs-platform-linux`). Full FUSE 3 userspace callback bindings are in active development.
+
+### Building on Linux
+
+Prerequisites:
+- [Rust toolchain](https://rustup.rs/) (1.75+)
+- GCC or Clang C++ toolchain
+- `libfuse3-dev` (Ubuntu/Debian) or `fuse3-devel` (Fedora/RHEL/Arch)
+
+```bash
+# Install system packages (Debian/Ubuntu)
+sudo apt-get update
+sudo apt-get install -y build-essential libfuse3-dev pkg-config
+
+# Build Linux platform crate and core modules
+cargo check -p driftfs-platform-linux
+cargo test -p driftfs-platform-linux
+```
+
+---
+
+## macOS Installation (Scaffolding)
+
+> **Platform Status:** Early Scaffolding. The workspace contains the macOS crate structure and configuration models (`driftfs-platform-macos`). macFUSE callback integration is in active development.
+
+### Building on macOS
+
+Prerequisites:
+- [Rust toolchain](https://rustup.rs/) (1.75+)
+- Xcode Command Line Tools (`xcode-select --install`)
+- [macFUSE](https://osxfuse.github.io/)
+
+```bash
+# Build macOS platform crate and core modules
+cargo check -p driftfs-platform-macos
+cargo test -p driftfs-platform-macos
+```
+
+---
+
 ## First-Time Configuration
 
 ### 1. Google OAuth 2.0 Credentials
 
 DriftFS uses OAuth 2.0 with PKCE (Proof Key for Code Exchange) to authenticate directly with Google Drive API v3:
 
-1. Create a Google Cloud project with the **Google Drive API** enabled.
-2. Under **Credentials**, create an **OAuth 2.0 Client ID** with Application Type set to **Desktop App**.
-3. Obtain your `client_id` and `client_secret`.
-4. Copy `config.example.toml` to your configuration directory:
-   - **Windows:** `%APPDATA%\DriftFS\config.toml`
-   - **Linux:** `~/.config/DriftFS/config.toml`
-   - **macOS:** `~/Library/Application Support/DriftFS/config.toml`
+* **Official Releases:** Official pre-built releases include a built-in default Client ID. You do not need to configure Google Cloud credentials manually. Simply proceed to step 2.
+* **Custom GCP Project (Optional):** If you prefer to use your own Google Cloud project:
+  1. Create a Google Cloud project with the **Google Drive API** enabled.
+  2. Configure the **OAuth Consent Screen** with Application Type set to External (or Internal), and add the following required scopes:
+     - `https://www.googleapis.com/auth/drive`
+     - `https://www.googleapis.com/auth/userinfo.email`
+     - `https://www.googleapis.com/auth/userinfo.profile`
+  3. Under **Credentials**, create an **OAuth 2.0 Client ID** with Application Type set to **Desktop App**.
+  4. Obtain your `client_id` (and optional `client_secret`).
+  5. Add credentials in the DriftFS Settings tab or add them to your `config.toml`:
+     - **Windows:** `%APPDATA%\DriftFS\config.toml`
+     - **Linux:** `~/.config/DriftFS/config.toml`
+     - **macOS:** `~/Library/Application Support/DriftFS/config.toml`
 
 ### 2. Authenticating
 
 1. Start `driftfs-ui`.
-2. Click **Connect Google Account**.
+2. Click **Connect Google Drive** (or open Settings to enter custom credentials).
 3. DriftFS opens your default web browser to the Google OAuth consent screen.
-4. Authorize the application. The local loopback listener captures the authorization token and securely commits the refresh token to your OS keyring (Windows Credential Manager).
+4. Authorize the application. The local loopback listener captures the authorization code and securely commits tokens to your native OS keyring (Windows Credential Manager, macOS Keychain, or Linux Secret Service).
 5. Tokens are never saved to plaintext configuration files or logs.
 
 ### 3. Mounting the Virtual Drive
 
-1. In the DriftFS dashboard, click **Mount Drive (G:)**.
+1. In the DriftFS dashboard, click **Connect (G:)**.
 2. Open Windows Explorer (`Win + E`). Drive `G:` appears under **This PC**.
 3. Directories and files stream on demand without consuming local disk space until opened.
 
@@ -112,5 +160,6 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 
 - **"WinFsp runtime not found"**: Verify that WinFsp is installed and the `Launcher` service is running in `services.msc`.
 - **"Drive letter G: already in use"**: Open `%APPDATA%\DriftFS\config.toml` and change `mount_point = "X:"` to an unused drive letter.
-- **Port 8080 collision during OAuth**: If another application is listening on the default loopback port, terminate that process or restart DriftFS to allocate an alternate loopback port.
+- **OAuth loopback redirection fails**: DriftFS binds an ephemeral OS-assigned port (`127.0.0.1:0`). Ensure your local firewall allows loopback connections on `127.0.0.1` and corporate proxies do not intercept localhost traffic.
 - **Keyring access denied**: Ensure the user account has access to the local Windows Credential Manager.
+- **Metadata location**: Local metadata and staging files reside in `%LOCALAPPDATA%\DriftFS\metadata.db` and `%LOCALAPPDATA%\DriftFS\staging`.

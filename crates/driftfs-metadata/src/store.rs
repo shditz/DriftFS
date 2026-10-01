@@ -7,8 +7,25 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use std::path::Path;
 use std::sync::Mutex;
 
+pub enum ConnectionGuard<'a> {
+    Reader(std::sync::MutexGuard<'a, Connection>),
+    Writer(std::sync::MutexGuard<'a, Connection>),
+}
+
+impl<'a> std::ops::Deref for ConnectionGuard<'a> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Reader(guard) => guard,
+            Self::Writer(guard) => guard,
+        }
+    }
+}
+
 pub struct MetadataStore {
-    conn: Mutex<Connection>,
+    writer: Mutex<Connection>,
+    reader: Option<Mutex<Connection>>,
 }
 
 impl MetadataStore {
@@ -18,13 +35,30 @@ impl MetadataStore {
                 .map_err(|e| MetadataError::InvalidState(e.to_string()))?;
         }
 
-        let mut conn = Connection::open(path)?;
-        Self::apply_pragmas(&mut conn)?;
-        run_migrations(&mut conn)?;
+        let mut writer = Connection::open(path)?;
+        Self::apply_pragmas(&mut writer)?;
+        run_migrations(&mut writer)?;
 
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        let mut reader = Connection::open(path)?;
+        Self::apply_pragmas(&mut reader)?;
+
+        let store = Self {
+            writer: Mutex::new(writer),
+            reader: Some(Mutex::new(reader)),
+        };
+        let _ = store.normalize_root_orphans();
+        Ok(store)
+    }
+
+    pub fn normalize_root_orphans(&self) -> Result<usize> {
+        let conn = self.lock_writer()?;
+        let count = conn.execute(
+            "UPDATE objects SET parent_id = NULL 
+             WHERE parent_id IS NOT NULL 
+               AND parent_id NOT IN (SELECT id FROM objects)",
+            [],
+        )?;
+        Ok(count)
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -36,7 +70,8 @@ impl MetadataStore {
         run_migrations(&mut conn)?;
 
         Ok(Self {
-            conn: Mutex::new(conn),
+            writer: Mutex::new(conn),
+            reader: None,
         })
     }
 
@@ -50,14 +85,26 @@ impl MetadataStore {
         Ok(())
     }
 
-    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
-        self.conn
-            .lock()
-            .map_err(|_| MetadataError::InvalidState("metadata connection lock poisoned".into()))
+    fn lock_writer(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.writer.lock().map_err(|_| {
+            MetadataError::InvalidState("metadata writer connection lock poisoned".into())
+        })
+    }
+
+    fn lock_reader(&self) -> Result<ConnectionGuard<'_>> {
+        if let Some(ref reader) = self.reader {
+            let guard = reader.lock().map_err(|_| {
+                MetadataError::InvalidState("metadata reader connection lock poisoned".into())
+            })?;
+            Ok(ConnectionGuard::Reader(guard))
+        } else {
+            let guard = self.lock_writer()?;
+            Ok(ConnectionGuard::Writer(guard))
+        }
     }
 
     pub fn upsert_object(&self, meta: &ObjectMetadata) -> Result<()> {
-        let mut conn = self.lock_conn()?;
+        let mut conn = self.lock_writer()?;
         let tx = conn.transaction()?;
         Self::tx_upsert_object(&tx, meta)?;
         tx.commit()?;
@@ -65,7 +112,7 @@ impl MetadataStore {
     }
 
     pub fn batch_upsert_objects(&self, objects: &[ObjectMetadata]) -> Result<()> {
-        let mut conn = self.lock_conn()?;
+        let mut conn = self.lock_writer()?;
         let tx = conn.transaction()?;
         for obj in objects {
             Self::tx_upsert_object(&tx, obj)?;
@@ -75,7 +122,7 @@ impl MetadataStore {
     }
 
     pub fn get_object(&self, id: &FileId) -> Result<Option<StoredObject>> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_reader()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id, parent_id, name, remote_name, kind, size_bytes,
                     mime_type, created_at, modified_at, version, sync_status, deleted
@@ -93,7 +140,7 @@ impl MetadataStore {
         parent_id: Option<&FileId>,
         name: &str,
     ) -> Result<Option<StoredObject>> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_reader()?;
         let parent_str = parent_id.map(|p| p.0.as_str());
 
         let mut stmt = conn.prepare_cached(
@@ -109,7 +156,7 @@ impl MetadataStore {
     }
 
     pub fn list_children(&self, parent_id: Option<&FileId>) -> Result<Vec<StoredObject>> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_reader()?;
         let parent_str = parent_id.map(|p| p.0.as_str());
 
         let mut stmt = conn.prepare_cached(
@@ -130,7 +177,7 @@ impl MetadataStore {
     }
 
     pub fn mark_deleted(&self, id: &FileId) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         conn.execute(
             "UPDATE objects SET deleted = 1 WHERE id = ?1",
             params![id.0],
@@ -144,7 +191,7 @@ impl MetadataStore {
         new_checkpoint: Option<&str>,
         account_id: &AccountId,
     ) -> Result<()> {
-        let mut conn = self.lock_conn()?;
+        let mut conn = self.lock_writer()?;
         let tx = conn.transaction()?;
 
         for change in changes {
@@ -177,7 +224,7 @@ impl MetadataStore {
     }
 
     pub fn get_checkpoint(&self, account_id: &AccountId) -> Result<Option<String>> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_reader()?;
         let mut stmt = conn.prepare_cached(
             "SELECT checkpoint_token FROM sync_checkpoints WHERE account_id = ?1",
         )?;
@@ -188,7 +235,7 @@ impl MetadataStore {
     }
 
     pub fn set_checkpoint(&self, account_id: &AccountId, token: &str) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         conn.execute(
             "INSERT INTO sync_checkpoints (account_id, checkpoint_token, last_sync_at)
              VALUES (?1, ?2, datetime('now'))
@@ -201,7 +248,7 @@ impl MetadataStore {
     }
 
     pub fn purge_tombstones(&self) -> Result<usize> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         let count = conn.execute("DELETE FROM objects WHERE deleted = 1", [])?;
         Ok(count)
     }
@@ -295,7 +342,7 @@ impl MetadataStore {
     }
 
     pub fn rename_object(&self, id: &FileId, new_name: &str) -> Result<StoredObject> {
-        let mut conn = self.lock_conn()?;
+        let mut conn = self.lock_writer()?;
         let tx = conn.transaction()?;
 
         let parent_id: Option<String> = tx
@@ -329,7 +376,7 @@ impl MetadataStore {
         new_parent_id: Option<&FileId>,
         new_name: &str,
     ) -> Result<StoredObject> {
-        let mut conn = self.lock_conn()?;
+        let mut conn = self.lock_writer()?;
         let tx = conn.transaction()?;
 
         let sanitized_name = new_name.replace(['/', '\\'], "_");
@@ -363,7 +410,7 @@ impl MetadataStore {
         modified_at: Option<&str>,
         version: Option<&str>,
     ) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         conn.execute(
             "UPDATE objects SET size_bytes = ?1, modified_at = ?2, version = COALESCE(?3, version) WHERE id = ?4 AND deleted = 0",
             params![size as i64, modified_at, version, id.0],
@@ -372,7 +419,7 @@ impl MetadataStore {
     }
 
     pub fn is_directory_synced(&self, dir_id: Option<&FileId>) -> Result<bool> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_reader()?;
         let id_str = dir_id.map(|p| p.0.as_str()).unwrap_or("__root__");
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM synced_directories WHERE dir_id = ?1",
@@ -383,7 +430,7 @@ impl MetadataStore {
     }
 
     pub fn mark_directory_synced(&self, dir_id: Option<&FileId>) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         let id_str = dir_id.map(|p| p.0.as_str()).unwrap_or("__root__");
         conn.execute(
             "INSERT INTO synced_directories (dir_id, synced_at) VALUES (?1, datetime('now'))
@@ -395,7 +442,7 @@ impl MetadataStore {
 
     /// Marks an object as deleted; semantically represents provider-side trash.
     pub fn mark_trashed(&self, id: &FileId) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         conn.execute(
             "UPDATE objects SET deleted = 1 WHERE id = ?1",
             params![id.0],
@@ -404,7 +451,7 @@ impl MetadataStore {
     }
 
     pub fn insert_new_object(&self, obj: &StoredObject) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         let parent_str = obj.parent_id.as_ref().map(|p| p.0.as_str());
         let kind_str = match obj.kind {
             ObjectKind::Directory => "directory",
@@ -435,7 +482,7 @@ impl MetadataStore {
     }
 
     pub fn has_children(&self, parent_id: &FileId) -> Result<bool> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_reader()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM objects WHERE parent_id = ?1 AND deleted = 0",
             params![parent_id.0],
@@ -453,7 +500,7 @@ impl MetadataStore {
             return Ok(true);
         }
 
-        let conn = self.lock_conn()?;
+        let conn = self.lock_reader()?;
         let mut current_id = Some(potential_descendant_id.clone());
 
         while let Some(curr) = current_id {
@@ -482,7 +529,7 @@ impl MetadataStore {
         staging_path: &str,
         parent_id: Option<&FileId>,
     ) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -505,7 +552,7 @@ impl MetadataStore {
     }
 
     pub fn update_staging_state(&self, handle_id: u64, state: StagingState) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -525,7 +572,7 @@ impl MetadataStore {
         session_uri: &str,
         uploaded_bytes: u64,
     ) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -542,7 +589,7 @@ impl MetadataStore {
     }
 
     pub fn remove_staging_entry(&self, handle_id: u64) -> Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_writer()?;
         conn.execute(
             "DELETE FROM staging_journal WHERE handle_id = ?1",
             params![handle_id as i64],
@@ -551,7 +598,7 @@ impl MetadataStore {
     }
 
     pub fn list_uncommitted_staging(&self) -> Result<Vec<StagingJournalEntry>> {
-        let conn = self.lock_conn()?;
+        let conn = self.lock_reader()?;
         let mut stmt = conn.prepare_cached(
             "SELECT handle_id, file_id, staging_path, parent_id, state, session_uri, uploaded_bytes, created_at, updated_at
              FROM staging_journal

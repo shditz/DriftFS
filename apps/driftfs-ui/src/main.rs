@@ -1,4 +1,7 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod controller;
+pub(crate) mod platform;
 mod tray;
 
 use std::sync::Arc;
@@ -26,8 +29,69 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+#[cfg(target_os = "windows")]
+struct SingleInstanceGuard {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+impl SingleInstanceGuard {
+    fn try_acquire() -> Option<Self> {
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+
+        let name: Vec<u16> = "Local\\DriftFS_SingleInstance_Mutex\0"
+            .encode_utf16()
+            .collect();
+        unsafe {
+            let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+            if handle == 0 {
+                return None;
+            }
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                CloseHandle(handle);
+                return None;
+            }
+            Some(Self { handle })
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    driftfs_logging::init("info");
+    #[cfg(target_os = "windows")]
+    let _instance_guard = match SingleInstanceGuard::try_acquire() {
+        Some(guard) => guard,
+        None => {
+            eprintln!("Another instance of DriftFS is already running.");
+            return Ok(());
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
+        #[link(name = "user32")]
+        extern "system" {
+            fn SetProcessDpiAwarenessContext(value: isize) -> i32;
+        }
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
+    let initial_config =
+        driftfs_config::DriftFsConfig::load(&driftfs_config::DriftFsConfig::default_path())
+            .unwrap_or_default();
+    driftfs_logging::init(&initial_config.logging.level);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -50,6 +114,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = AppWindow::new()?;
     let app_weak = app.as_weak();
+
+    {
+        let close_app = app_weak.clone();
+        let ctrl = Arc::clone(&controller);
+        let rt_handle = rt.handle().clone();
+        app.window().on_close_requested(move || {
+            let minimize_to_tray = ctrl.is_minimize_to_tray();
+
+            if minimize_to_tray {
+                if let Some(w) = close_app.upgrade() {
+                    let _ = w.hide();
+                }
+                slint::CloseRequestResponse::HideWindow
+            } else {
+                let c = Arc::clone(&ctrl);
+                rt_handle.spawn(async move {
+                    let _ = c.unmount().await;
+                    slint::invoke_from_event_loop(|| {
+                        slint::quit_event_loop().unwrap_or_default();
+                    })
+                    .unwrap_or_default();
+                });
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+    }
 
     {
         let ctrl = Arc::clone(&controller);
@@ -111,10 +201,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ctrl = Arc::clone(&controller);
         let rt_handle = rt.handle().clone();
+        let ui_weak = app_weak.clone();
         app.on_toggle_prefetch(move || {
             let c = Arc::clone(&ctrl);
+            let ui_w = ui_weak.clone();
             rt_handle.spawn(async move {
                 c.toggle_prefetch().await;
+                let val = c.state().await.prefetch_enabled;
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_w.upgrade() {
+                        ui.set_prefetch_enabled(val);
+                    }
+                });
             });
         });
     }
@@ -122,10 +220,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ctrl = Arc::clone(&controller);
         let rt_handle = rt.handle().clone();
+        let ui_weak = app_weak.clone();
         app.on_toggle_autostart(move || {
             let c = Arc::clone(&ctrl);
+            let ui_w = ui_weak.clone();
             rt_handle.spawn(async move {
                 c.toggle_autostart().await;
+                let val = c.state().await.auto_start;
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_w.upgrade() {
+                        ui.set_auto_start(val);
+                    }
+                });
             });
         });
     }
@@ -133,12 +239,125 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ctrl = Arc::clone(&controller);
         let rt_handle = rt.handle().clone();
+        let ui_weak = app_weak.clone();
         app.on_toggle_start_minimized(move || {
             let c = Arc::clone(&ctrl);
+            let ui_w = ui_weak.clone();
             rt_handle.spawn(async move {
                 c.toggle_start_minimized().await;
+                let val = c.state().await.start_minimized;
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_w.upgrade() {
+                        ui.set_start_minimized(val);
+                    }
+                });
             });
         });
+    }
+
+    {
+        let ctrl = Arc::clone(&controller);
+        let rt_handle = rt.handle().clone();
+        let change_app = app_weak.clone();
+        app.on_change_drive_letter(move |new_letter| {
+            let c = Arc::clone(&ctrl);
+            let letter_str = new_letter.to_string();
+            let ui_weak = change_app.clone();
+            rt_handle.spawn(async move {
+                c.change_drive_letter(letter_str).await;
+                let updated = c.current_drive_letter();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_drive_letter(SharedString::from(updated));
+                    }
+                });
+            });
+        });
+    }
+
+    {
+        let ctrl = Arc::clone(&controller);
+        let rt_handle = rt.handle().clone();
+        let save_app = app_weak.clone();
+        app.on_save_oauth_credentials(move |id, secret| {
+            let c = Arc::clone(&ctrl);
+            let id_str = id.to_string();
+            let secret_str = if secret.is_empty() {
+                None
+            } else {
+                Some(secret.to_string())
+            };
+            let has_default = driftfs_auth::get_build_time_default_client_id().is_some();
+            let has_config = !id_str.trim().is_empty() || has_default;
+            let ui_weak = save_app.clone();
+            rt_handle.spawn(async move {
+                if c.save_oauth_credentials(id_str, secret_str).await.is_ok() {
+                    let w = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = w.upgrade() {
+                            ui.set_save_status(SharedString::from("Credentials saved"));
+                            ui.set_has_oauth_config(has_config);
+                        }
+                    });
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_save_status(SharedString::from(""));
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    {
+        let ctrl = Arc::clone(&controller);
+        let rt_handle = rt.handle().clone();
+        let reset_app = app_weak.clone();
+        app.on_reset_oauth_to_default(move || {
+            let c = Arc::clone(&ctrl);
+            let ui_weak = reset_app.clone();
+            rt_handle.spawn(async move {
+                if c.reset_oauth_to_default().await.is_ok() {
+                    let has_default = driftfs_auth::get_build_time_default_client_id().is_some();
+                    let w = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = w.upgrade() {
+                            ui.set_client_id(SharedString::from(""));
+                            ui.set_client_secret(SharedString::from(""));
+                            ui.set_has_oauth_config(has_default);
+                            ui.set_save_status(SharedString::from("Reset to default"));
+                        }
+                    });
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_save_status(SharedString::from(""));
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    {
+        let state = rt.block_on(async { controller.state().await });
+        app.set_client_id(SharedString::from(&state.client_id));
+        app.set_client_secret(SharedString::from(&state.client_secret));
+        app.set_has_oauth_config(state.has_oauth_config);
+        app.set_auto_start(state.auto_start);
+        app.set_start_minimized(state.start_minimized);
+        app.set_prefetch_enabled(state.prefetch_enabled);
+        app.set_sync_interval_secs(state.sync_interval_secs as i32);
+
+        // Auto-connect to Google Drive on launch if already logged in and auto_mount enabled
+        if state.is_authenticated && !state.is_mounted && state.auto_mount {
+            let auto_ctrl = Arc::clone(&controller);
+            rt.spawn(async move {
+                tracing::info!("User already logged in, auto-connecting Google Drive...");
+                let _ = auto_ctrl.mount().await;
+            });
+        }
     }
 
     let timer = slint::Timer::default();
@@ -156,7 +375,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match cmd {
                         TrayCommand::ShowWindow => {
                             if let Some(w) = poll_app.upgrade() {
-                                w.show().unwrap_or_default();
+                                let _ = w.show();
                             }
                         }
                         TrayCommand::ToggleMount => {
@@ -238,7 +457,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ui.set_auto_start(state.auto_start);
                         ui.set_start_minimized(state.start_minimized);
                         ui.set_prefetch_enabled(state.prefetch_enabled);
-                        ui.set_sync_interval_secs(state.sync_interval_secs as i32);
 
                         let log_models: Vec<SharedString> = state
                             .activity_log
@@ -255,7 +473,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
-    app.run()?;
+    app.show()?;
+    slint::run_event_loop_until_quit()?;
 
     rt.block_on(async {
         let _ = controller.unmount().await;

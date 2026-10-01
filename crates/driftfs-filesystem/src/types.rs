@@ -106,13 +106,25 @@ pub struct VfsStatFs {
     pub block_size: u32,
 }
 
-impl Default for VfsStatFs {
-    fn default() -> Self {
+impl VfsStatFs {
+    pub fn new(total_space: u64, used_space: u64) -> Self {
+        let total = if total_space == 0 {
+            5 * 1024 * 1024 * 1024 * 1024
+        } else {
+            total_space
+        };
+        let free = total.saturating_sub(used_space);
         Self {
-            total_space: 100 * 1024 * 1024 * 1024,
-            free_space: 50 * 1024 * 1024 * 1024,
-            available_space: 50 * 1024 * 1024 * 1024,
+            total_space: total,
+            free_space: free,
+            available_space: free,
             block_size: 4096,
         }
+    }
+}
+
+impl Default for VfsStatFs {
+    fn default() -> Self {
+        Self::new(5 * 1024 * 1024 * 1024 * 1024, 0)
     }
 }

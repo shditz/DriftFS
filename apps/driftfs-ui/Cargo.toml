@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "driftfs-ui"
+path = "src/main.rs"
+
 [dependencies]
 driftfs-core = { workspace = true }
 driftfs-config = { workspace = true }
@@ -19,6 +23,7 @@ driftfs-cache = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 driftfs-platform-windows = { workspace = true }
+windows-sys = { version = "0.52.0", features = ["Win32_System_Threading", "Win32_Foundation"] }
 
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -32,6 +37,7 @@ thiserror = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }
+embed-resource = "3"
 
 [lints]
 workspace = true

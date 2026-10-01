@@ -384,4 +384,48 @@ mod tests {
         store.remove_staging_entry(1001).expect("remove entry");
         assert!(store.list_uncommitted_staging().unwrap().is_empty());
     }
+
+    #[test]
+    fn concurrent_reader_during_writer_transaction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("metadata.db");
+        let store = std::sync::Arc::new(MetadataStore::open(&db_path).expect("open store"));
+
+        let initial_file = make_test_meta("initial_1", None, "init.txt", ObjectKind::File);
+        store.upsert_object(&initial_file).expect("upsert initial");
+
+        let (tx_start, rx_start) = std::sync::mpsc::channel();
+        let (tx_done, rx_done) = std::sync::mpsc::channel();
+
+        let store_writer = store.clone();
+        let writer_handle = std::thread::spawn(move || {
+            tx_start.send(()).unwrap();
+            let objects: Vec<_> = (0..50)
+                .map(|i| {
+                    make_test_meta(
+                        &format!("batch_{i}"),
+                        None,
+                        &format!("f_{i}.txt"),
+                        ObjectKind::File,
+                    )
+                })
+                .collect();
+            store_writer
+                .batch_upsert_objects(&objects)
+                .expect("batch upsert");
+            tx_done.send(()).unwrap();
+        });
+
+        rx_start.recv().unwrap();
+
+        let obj = store.get_object(&initial_file.id).expect("reader query");
+        assert!(obj.is_some());
+        assert_eq!(obj.unwrap().name, "init.txt");
+
+        writer_handle.join().unwrap();
+        rx_done.recv().unwrap();
+
+        let all_root = store.list_children(None).expect("list children");
+        assert_eq!(all_root.len(), 51);
+    }
 }

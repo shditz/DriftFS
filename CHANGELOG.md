@@ -5,6 +5,17 @@ All notable changes to DriftFS are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-10-01
+
+### Added
+- **Interactive Drive Letter Selection (`driftfs-ui`)**: Users can now configure their preferred virtual drive letter directly from the Settings tab with automatic persistence to `config.toml`.
+- **Configurable VFS Concurrency (`driftfs-filesystem`)**: Added `with_max_concurrent_reads` builder method enabling runtime control over maximum simultaneous range read requests.
+
+### Changed
+- **Runtime Configuration Consumption**: Connected `config.logging.level` to tracing startup, `config.mount.auto_mount` to launch sequence, and `config.network.max_concurrent_requests` to VFS read throttles.
+- **Accessibility & Contrast (`driftfs-ui`)**: Elevated `Theme.text-muted` to `#9ca3af` achieving 7.20:1 contrast ratio against dark card surfaces, fully compliant with WCAG AA.
+- **Platform Adapter Error Precision (`platforms/linux`, `platforms/macos`)**: Explicitly return typed unsupported/not-implemented errors rather than simulated mount success.
+
 ## [0.1.0] - 2026-09-30
 
 ### Added

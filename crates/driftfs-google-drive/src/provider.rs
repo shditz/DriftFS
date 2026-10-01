@@ -506,7 +506,9 @@ impl CloudProvider for GoogleDriveProvider {
         let mut changes = Vec::new();
         if let Some(items) = resp.changes {
             for item in items {
-                if item.removed.unwrap_or(false) {
+                let is_trashed = item.file.as_ref().and_then(|f| f.trashed).unwrap_or(false);
+
+                if item.removed.unwrap_or(false) || is_trashed {
                     changes.push(Change::Delete {
                         id: FileId(item.file_id),
                     });
